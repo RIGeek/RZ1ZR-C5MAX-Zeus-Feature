@@ -5,7 +5,7 @@
   "version": "0.1.0",
   "author": "N1MJF",
   "description": "Monitoring and basic control for an amp with an RZ1ZR C5MAX controller.",
-  "homepage": "https://github.com/example/zeus-hfamp",
+  "homepage": "https://github.com/RIGeek/RZ1ZR-C5MAX-Zeus-Feature",
   "license": "GPL-2.0-or-later",
   "sdk": { "abi": 1, "minVersion": "1.5.0" },
   "entrypoint": {
