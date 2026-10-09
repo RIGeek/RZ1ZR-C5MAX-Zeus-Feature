@@ -1,0 +1,115 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
+using System.Text.Json;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
+using Microsoft.AspNetCore.Routing;
+using Zeus.Community.HfAmp.Amp;
+
+namespace Zeus.Community.HfAmp;
+
+internal sealed record CommandRequest(string? Action, int? Band, int? Antenna, string? Mode);
+
+internal sealed record SettingsRequest(string? Host, bool? FollowBand);
+
+/// <summary>
+/// HTTP surface, mounted by Zeus under /api/plugins/&lt;id&gt;/. It can switch relays
+/// and cut the PA supply, so state-changing routes refuse cross-site browser
+/// requests and anything that is not JSON.
+/// </summary>
+internal static class HfAmpEndpoints
+{
+    private const int MaxBodyBytes = 4096;
+
+    public static void Map(IEndpointRouteBuilder endpoints, Func<HfAmpService?> service)
+    {
+        endpoints.MapGet("status", (HttpContext ctx) =>
+            With(ctx, service, s => Results.Json(s.BuildStatus())));
+
+        endpoints.MapGet("settings", (HttpContext ctx) =>
+            With(ctx, service, s => Results.Json(s.GetSettings())));
+
+        endpoints.MapPost("settings", async (HttpContext ctx) =>
+        {
+            var s = service();
+            if (s is null) return Unavailable();
+
+            var (body, error) = await ReadJsonAsync<SettingsRequest>(ctx);
+            if (error is not null) return error;
+
+            var current = s.GetSettings();
+            var result = await s.ApplySettingsAsync(
+                new AmpSettings(body!.Host ?? current.Host, body.FollowBand ?? current.FollowBand),
+                ctx.RequestAborted);
+            return Reply(ctx, result);
+        });
+
+        endpoints.MapPost("command", async (HttpContext ctx) =>
+        {
+            var s = service();
+            if (s is null) return Unavailable();
+
+            var (body, error) = await ReadJsonAsync<CommandRequest>(ctx);
+            if (error is not null) return error;
+
+            var mode = body!.Mode?.ToLowerInvariant();
+            CommandResult result = body.Action?.ToLowerInvariant() switch
+            {
+                "reset" => await s.Amp.ResetAsync(),
+                "band" when body.Band is int band => s.Amp.StartBandSelect(band),
+                "antenna" when body.Antenna is int antenna => await s.Amp.SetAntennaAsync(antenna),
+                "voltage" when mode is "low" or "high" => await s.Amp.SetVoltageAsync(mode == "high"),
+                "fans" when mode is "auto" or "force" => await s.Amp.SetFansAsync(mode == "force"),
+                "bypass" when mode is "on" or "off" => await s.Amp.SetBypassAsync(mode == "on"),
+                _ => CommandResult.Invalid("Unknown or incomplete command"),
+            };
+            return Reply(ctx, result);
+        });
+    }
+
+    private static IResult With(HttpContext ctx, Func<HfAmpService?> service, Func<HfAmpService, IResult> action)
+    {
+        ctx.Response.Headers.CacheControl = "no-store";
+        var s = service();
+        return s is null ? Unavailable() : action(s);
+    }
+
+    private static IResult Unavailable() =>
+        Results.Json(new { ok = false, message = "The amplifier feature is not running" }, statusCode: 503);
+
+    private static IResult Reply(HttpContext ctx, CommandResult result)
+    {
+        ctx.Response.Headers.CacheControl = "no-store";
+        return Results.Json(new { ok = result.Ok, message = result.Message }, statusCode: result.Status);
+    }
+
+    private static IResult Refuse(int status, string message) =>
+        Results.Json(new { ok = false, message }, statusCode: status);
+
+    private static async Task<(T? Value, IResult? Error)> ReadJsonAsync<T>(HttpContext ctx) where T : class
+    {
+        // Browsers label every request with Sec-Fetch-Site. Same-origin means the Zeus page itself
+        // (or "none" for a user-initiated navigation); anything else is another site poking at us.
+        var site = ctx.Request.Headers["Sec-Fetch-Site"].ToString();
+        if (site.Length > 0 && site != "same-origin" && site != "none")
+            return (null, Refuse(403, "Cross-site requests are refused"));
+
+        if (!ctx.Request.HasJsonContentType())
+            return (null, Refuse(415, "Content-Type must be application/json"));
+
+        if (ctx.Request.ContentLength is > MaxBodyBytes)
+            return (null, Refuse(413, "Request body too large"));
+        var limit = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
+        if (limit is { IsReadOnly: false }) limit.MaxRequestBodySize = MaxBodyBytes;
+
+        try
+        {
+            var value = await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
+            return value is null ? (null, Refuse(400, "Empty request")) : (value, null);
+        }
+        catch (Exception ex) when (ex is JsonException or BadHttpRequestException or InvalidOperationException)
+        {
+            return (null, Refuse(400, "Malformed request"));
+        }
+    }
+}

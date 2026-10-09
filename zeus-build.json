@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "dotnet": {
+    "project": "src/Zeus.Community.HfAmp/Zeus.Community.HfAmp.csproj",
+    "configuration": "Release"
+  },
+  "node": [
+    { "directory": "web", "script": "build" }
+  ],
+  "package": {
+    "plugin.json": "src/Zeus.Community.HfAmp/plugin.json",
+    "LICENSE": "LICENSE",
+    "THIRD-PARTY-NOTICES.txt": "THIRD-PARTY-NOTICES.txt",
+    "ui/hf-amp.js": "web/dist/hf-amp.js"
+  }
+}

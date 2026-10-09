@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "id": "com.n1mjf.hfamp",
+  "name": "RZ1ZR LDMOS Amplifier",
+  "version": "0.1.0",
+  "author": "N1MJF",
+  "description": "Monitoring and basic control for an amp with an RZ1ZR C5MAX controller.",
+  "homepage": "https://github.com/example/zeus-hfamp",
+  "license": "GPL-2.0-or-later",
+  "sdk": { "abi": 1, "minVersion": "1.5.0" },
+  "entrypoint": {
+    "assembly": "Zeus.Community.HfAmp.dll",
+    "type": "Zeus.Community.HfAmp.HfAmpPlugin"
+  },
+  "capabilities": ["NetworkAccess", "ReadRadioState", "PersistSettings"],
+  "permissions": {
+    "network": true,
+    "fileSystemRead": false,
+    "fileSystemWrite": false
+  },
+  "ui": {
+    "modules": ["ui/hf-amp.js"],
+    "panels": [
+      {
+        "id": "hf-amp",
+        "title": "HF Amplifier",
+        "slot": "workspace.hf-amp",
+        "category": "amplifiers"
+      }
+    ]
+  }
+}
