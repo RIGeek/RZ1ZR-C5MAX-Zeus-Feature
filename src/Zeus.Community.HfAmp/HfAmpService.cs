@@ -8,7 +8,7 @@ namespace Zeus.Community.HfAmp;
 
 internal sealed record ApiStatus(
     ApiConnection Connection, ApiAmp? Amp, ApiMeters? Meters,
-    ApiControls Controls, ApiFollow Follow, ApiLimits Limits);
+    ApiControls Controls, ApiFollow Follow, ApiLimits Limits, string? SampledUtc);
 
 internal sealed record ApiConnection(string State, string? Host, string? Error);
 
@@ -116,7 +116,8 @@ internal sealed class HfAmpService : IAsyncDisposable
             amp, meters,
             new ApiControls(s.FansForced, s.BandSelect, s.Message, AmpProtocol.BandNames, AmpProtocol.AntennaCount),
             follow,
-            new ApiLimits(1300, 100, 15, 40));
+            new ApiLimits(1300, 100, 15, 40),
+            s.SampledUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
     }
 
     public async ValueTask DisposeAsync()

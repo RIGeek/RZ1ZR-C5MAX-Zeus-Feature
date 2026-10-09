@@ -238,10 +238,41 @@ function Panel({ api }) {
         h('p', { className: 'hfa-note' }, 'Zeus takes control of the amplifier while connected and hands it back to its front panel when Zeus closes.'))));
 }
 
+// Maps /status onto the host's standard amplifier meter (the meters pane).
+function toAmplifierMeter(status) {
+  const c = status.connection || {};
+  const connected = c.state === 'connected';
+  const sampled = Date.parse(status.sampledUtc);
+  return {
+    enabled: !!c.host,                                  // an amplifier address is configured
+    connected,                                          // control link is up
+    operating: connected && !!status.amp && !status.amp.bypass,   // not bypassed (LDMOS supply on)
+    outputWatts: status.meters?.fresh ? status.meters.forwardW : 0,
+    maxWatts: status.limits?.forwardW ?? 1300,
+    sampledAt: Number.isFinite(sampled) ? sampled : 0,  // old/zero while telemetry is stale
+  };
+}
+
 export default function register(api) {
   ensureStyles();
   api.registerPanel({
     id: 'hf-amp',
     component: () => h(Panel, { api }),
   });
+
+  // Older Zeus hosts do not have the meters-pane hook; the workspace panel still works without it.
+  if (typeof api.registerAmplifierMeter === 'function') {
+    api.registerAmplifierMeter({
+      id: 'main',
+      async read(signal) {
+        try {
+          const response = await api.callBackend('GET', '/status', undefined, { signal });
+          if (!response.ok) return null;
+          return toAmplifierMeter(await response.json());
+        } catch {
+          return null;
+        }
+      },
+    });
+  }
 }

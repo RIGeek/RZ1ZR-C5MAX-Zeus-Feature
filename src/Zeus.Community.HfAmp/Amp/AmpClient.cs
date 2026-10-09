@@ -23,7 +23,7 @@ internal sealed record MeterView(bool Fresh, Readings Readings, int[] Raw);
 internal sealed record AmpSnapshot(
     LinkState Link, string? Host, string? Error,
     AmpStatus? Status, MeterView? Meter,
-    bool FansForced, string? BandSelect, string? Message);
+    bool FansForced, string? BandSelect, string? Message, DateTime? SampledUtc);
 
 internal sealed class AmpClientOptions
 {
@@ -166,7 +166,13 @@ internal sealed class AmpClient : IAsyncDisposable
             }
 
             var message = DateTime.UtcNow - _messageUtc <= MessageLifetime ? _message : null;
-            return new AmpSnapshot(_link, _host, _error, _status, meter, _fansForced, _bandSelect, message);
+            // When did the numbers describe the amp? While connected and idle the last status push is still
+            // current (the amp only pushes on change), so that is "now". While transmitting the meter stream
+            // is the source, so a stalled stream shows up as an old timestamp and Zeus can mark it stale.
+            DateTime? sampled = null;
+            if (_link == LinkState.Connected && _status is { } st)
+                sampled = st.Tx ? (_meterUtc == DateTime.MinValue ? null : _meterUtc) : DateTime.UtcNow;
+            return new AmpSnapshot(_link, _host, _error, _status, meter, _fansForced, _bandSelect, message, sampled);
         }
     }
 
