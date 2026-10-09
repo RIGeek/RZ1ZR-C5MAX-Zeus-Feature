@@ -28,21 +28,46 @@ async function call(api, method, path, body) {
 
 const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
 
-function Meter({ label, value, unit, max, digits, live }) {
+function Meter({ label, value, unit, max, digits, live, warnAt }) {
   const pct = value == null ? 0 : Math.max(0, Math.min(100, (value / max) * 100));
+  const warn = live && warnAt != null && pct >= warnAt;
   return h('div', { className: 'hfa-meter' },
-    h('span', { className: 'lbl' }, label),
+    h('div', { className: 'hfa-meter-head' },
+      h('span', { className: 'hfa-label' }, label),
+      h('span', { className: 'val' }, fmt(value, digits), h('span', { className: 'unit' }, unit))),
     h('div', {
-      className: `hfa-bar${live ? '' : ' stale'}`, role: 'meter', 'aria-label': label,
+      className: `hfa-bar${live ? '' : ' stale'}${warn ? ' warn' : ''}`, role: 'meter', 'aria-label': label,
       'aria-valuemin': 0, 'aria-valuemax': max, 'aria-valuenow': value == null ? 0 : Math.round(value),
-    }, h('i', { style: { width: `${pct}%` } })),
-    h('span', { className: 'val' }, `${fmt(value, digits)} ${unit}`));
+    }, h('i', { style: { width: `${pct}%` } })));
 }
 
 function Read({ k, v, warn }) {
   return h('div', { className: 'hfa-read' },
-    h('span', { className: 'k' }, k),
+    h('span', { className: 'hfa-label' }, k),
     h('span', { className: `v${warn ? ' warn' : ''}` }, v));
+}
+
+const STORE = `${ROOT}.sections`;
+function loadOpen() {
+  try { return JSON.parse(localStorage.getItem(STORE) || '{}') || {}; } catch { return {}; }
+}
+function saveOpen(v) {
+  try { localStorage.setItem(STORE, JSON.stringify(v)); } catch { /* storage unavailable */ }
+}
+
+// A card with a button header that collapses its body. `locked` keeps it open (e.g. nothing configured yet).
+function Section({ id, title, summary, open, locked, onToggle, children }) {
+  const expanded = !!(open || locked);
+  const bodyId = `${ROOT}-${id}`;
+  return h('section', { className: `hfa-card hfa-section${expanded ? '' : ' collapsed'}` },
+    h('button', {
+      type: 'button', className: 'hfa-toggle', 'aria-expanded': expanded, 'aria-controls': bodyId,
+      disabled: !!locked, onClick: onToggle,
+    },
+      h('span', { className: 'hfa-chev', 'aria-hidden': 'true' }),
+      h('span', { className: 'hfa-label' }, title),
+      !expanded && summary ? h('span', { className: 'hfa-summary' }, summary) : null),
+    expanded ? h('div', { id: bodyId, className: 'hfa-body' }, children) : null);
 }
 
 function Panel({ api }) {
@@ -51,6 +76,7 @@ function Panel({ api }) {
   const [msg, setMsg] = React.useState({ text: '', err: false });
   const [hostDraft, setHostDraft] = React.useState('');
   const hostTouched = React.useRef(false);
+  const [openMap, setOpenMap] = React.useState(loadOpen);
 
   React.useEffect(() => {
     let stop = false;
@@ -82,11 +108,17 @@ function Panel({ api }) {
     }
   };
   const cmd = (body) => post('/command', body);
+  const isOpen = (id, dflt) => (openMap[id] === undefined ? dflt : !!openMap[id]);
+  const flip = (id, dflt) => () => setOpenMap((m) => {
+    const next = { ...m, [id]: !(m[id] === undefined ? dflt : m[id]) };
+    saveOpen(next);
+    return next;
+  });
 
   if (!status) {
     return h('div', { className: ROOT },
       h('div', { className: 'hfa-card' },
-        h('h2', null, 'HF Amplifier'),
+        h('h2', { className: 'hfa-title' }, 'HF Amplifier'),
         h('p', { className: 'hfa-empty', role: 'status' },
           loadError ? `Unavailable: ${loadError}` : 'Loading…')));
   }
@@ -125,17 +157,17 @@ function Panel({ api }) {
   return h('div', { className: ROOT },
     h('div', { className: 'hfa-card' },
       h('div', { className: 'hfa-head' },
-        h('h2', null, 'HF Amplifier'),
+        h('h2', { className: 'hfa-title' }, 'HF Amplifier'),
         h('span', { className: `hfa-pill ${pill[1]}`, role: 'status' }, pill[0])),
       c.error && !connected ? h('p', { className: 'hfa-msg err' }, c.error) : null,
       unconfigured
         ? h('p', { className: 'hfa-empty' }, 'Enter the amplifier address below to connect.')
         : null,
       h('div', { className: 'hfa-meters' },
-        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', max: limits.forwardW, digits: 0, live }),
-        h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', max: limits.reflectedW, digits: 0, live }),
+        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', max: limits.forwardW, digits: 0, live, warnAt: 92 }),
+        h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', max: limits.reflectedW, digits: 0, live, warnAt: 25 }),
         h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', max: limits.inputW, digits: 0, live }),
-        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', max: limits.currentA, digits: 1, live })),
+        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', max: limits.currentA, digits: 1, live, warnAt: 90 })),
       h('div', { className: 'hfa-readouts' },
         h(Read, { k: 'SWR', v: live && meters.swr != null ? `${fmt(meters.swr, 2)}:1` : '—', warn: live && meters.swr > 2 }),
         h(Read, { k: 'Efficiency', v: live && meters.efficiencyPercent != null ? `${fmt(meters.efficiencyPercent, 0)} %` : '—' }),
@@ -143,11 +175,20 @@ function Panel({ api }) {
         h(Read, { k: 'Temp', v: amp ? `${fmt(amp.tempC)} °C` : '—', warn: amp?.tempC >= 60 }),
         h(Read, { k: 'Band', v: amp ? amp.bandName : '—' }),
         h(Read, { k: 'Antenna', v: amp ? String(amp.antenna) : '—' })),
+      msg.text || controls.message || controls.bandSelect
+        ? h('div', { className: 'hfa-msg' + (msg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' },
+          msg.text || controls.bandSelect || controls.message)
+        : null,
       live ? h('p', { className: 'hfa-note' }, 'Efficiency is an estimate (output power ÷ supply V × current); power scaling is approximate.') : null),
 
-    h('div', { className: 'hfa-card' },
+    h(Section, {
+      id: 'controls', title: 'Controls', open: isOpen('controls', true), onToggle: flip('controls', true),
+      summary: amp ? [amp.bandName, `Ant ${amp.antenna}`, amp.highVoltage ? 'High' : 'Low',
+        follow.enabled ? 'Following' : '', controls.fansForced ? 'Fans 100%' : '', amp.bypass ? 'BYPASS' : '']
+        .filter(Boolean).join(' · ') : '',
+    },
       h('div', { className: 'hfa-group' },
-        h('h2', null, 'Band'),
+        h('h2', { className: 'hfa-label' }, 'Band'),
         h('div', { className: 'hfa-row', role: 'group', 'aria-label': 'Band' },
           Array.from({ length: controls.bands.length }, (_, i) => sel(i + 1))),
         controls.bandSelect ? h('p', { className: 'hfa-note', role: 'status' }, controls.bandSelect) : null,
@@ -161,39 +202,40 @@ function Panel({ api }) {
           ? h('p', { className: 'hfa-note' }, [followLabel, follow.enabled ? follow.state : ''].filter(Boolean).join(' · '))
           : h('p', { className: 'hfa-note' }, 'Radio state is not available, so band following is off.')),
       h('div', { className: 'hfa-group' },
-        h('h2', null, 'Antenna'),
+        h('h2', { className: 'hfa-label' }, 'Antenna'),
         h('div', { className: 'hfa-row', role: 'group', 'aria-label': 'Antenna' },
           Array.from({ length: controls.antennas }, (_, i) => ant(i + 1)))),
       h('div', { className: 'hfa-group' },
-        h('h2', null, 'Supply'),
+        h('h2', { className: 'hfa-label' }, 'Supply'),
         h('div', { className: 'hfa-row', role: 'group', 'aria-label': 'Supply voltage' },
           h('button', { type: 'button', 'aria-pressed': amp ? !amp.highVoltage : false, disabled: !connected || lockTx,
             onClick: () => cmd({ action: 'voltage', mode: 'low' }) }, 'Low'),
           h('button', { type: 'button', 'aria-pressed': amp ? amp.highVoltage : false, disabled: !connected || lockTx,
             onClick: () => cmd({ action: 'voltage', mode: 'high' }) }, 'High'))),
       h('div', { className: 'hfa-group' },
-        h('h2', null, 'Cooling and protection'),
+        h('h2', { className: 'hfa-label' }, 'Cooling and protection'),
         h('div', { className: 'hfa-row' },
           toggle('Fans 100%', !!controls.fansForced, 'fans', 'force', 'auto'),
           toggle('Bypass', !!amp?.bypass, 'bypass', 'on', 'off', { warn: true, disabled: false }),
           h('button', { type: 'button', disabled: !connected, onClick: () => cmd({ action: 'reset' }) }, 'Reset')),
-        h('p', { className: 'hfa-note' }, 'Bypass cuts the LDMOS supply. Changes are locked while transmitting.')),
-      h('div', { className: 'hfa-msg' + (msg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' },
-        msg.text || controls.message || '')),
+        h('p', { className: 'hfa-note' }, 'Bypass cuts the LDMOS supply. Changes are locked while transmitting.'))),
 
-    h('form', {
-      className: 'hfa-card',
-      onSubmit: (e) => { e.preventDefault(); hostTouched.current = false; post('/settings', { host: hostDraft.trim() }); },
+    h(Section, {
+      id: 'connection', title: 'Connection', open: isOpen('connection', false), locked: unconfigured || !connected,
+      onToggle: flip('connection', false), summary: c.host || '',
     },
-      h('h2', null, 'Connection'),
-      h('div', { className: 'hfa-row' },
-        h('input', {
-          type: 'text', value: hostDraft, 'aria-label': 'Amplifier address', placeholder: 'e.g. 192.168.1.50',
-          autoComplete: 'off', spellCheck: false,
-          onChange: (e) => { hostTouched.current = true; setHostDraft(e.target.value); },
-        }),
-        h('button', { type: 'submit' }, 'Connect')),
-      h('p', { className: 'hfa-note' }, 'Zeus takes control of the amplifier while connected and hands it back to its front panel when Zeus closes.')));
+      h('form', {
+        className: 'hfa-form',
+        onSubmit: (e) => { e.preventDefault(); hostTouched.current = false; post('/settings', { host: hostDraft.trim() }); },
+      },
+        h('div', { className: 'hfa-row' },
+          h('input', {
+            type: 'text', value: hostDraft, 'aria-label': 'Amplifier address', placeholder: 'e.g. 192.168.1.50',
+            autoComplete: 'off', spellCheck: false,
+            onChange: (e) => { hostTouched.current = true; setHostDraft(e.target.value); },
+          }),
+          h('button', { type: 'submit' }, 'Connect')),
+        h('p', { className: 'hfa-note' }, 'Zeus takes control of the amplifier while connected and hands it back to its front panel when Zeus closes.'))));
 }
 
 export default function register(api) {
