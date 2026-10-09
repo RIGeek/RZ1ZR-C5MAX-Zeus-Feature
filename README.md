@@ -1,6 +1,6 @@
-# RZ1ZR C5Max LDMOS Amplifier Control — Zeus community feature
+# HF LDMOS Amplifier — Zeus community feature
 
-Control and metering for a network-connected HF LDMOS amplifier with a RZ1ZR controller from inside Zeus.
+Control and metering for a network-connected HF LDMOS amplifier from inside Zeus.
 
 * Live output / reflected / input power, drain current, SWR, supply, temperature
 * **Efficiency %** (estimate: output power ÷ (supply V × current))
