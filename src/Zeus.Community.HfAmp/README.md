@@ -20,6 +20,27 @@ UDP 5010: send `11`; while transmitting the amp streams `fwd,refl,cur,inp` raw c
 Calibration (power = counts²/450, current = counts × 0.135) was fitted to one screenshot and is
 approximate. Field 5 of the status push has never been seen non-zero.
 
+## Meter colour zones
+
+Green / yellow / red. Output, input, supply and SWR limits are the owner's; current and temperature are
+derived and should be reviewed:
+
+| Meter | Green | Yellow | Red |
+| --- | --- | --- | --- |
+| Output | < 600 W | 600-1199 W | >= 1200 W |
+| SWR (and Reflected, which follows SWR) | <= 1.7:1 | 1.7-2.4:1 | >= 2.5:1 |
+| Input | < 3 W | 3-4.9 W | >= 5 W |
+| Supply | < 48.4 V | 48.4-52.9 V | >= 53 V |
+| Current | < 30 A | 30-37.9 A | >= 38 A |
+| Temp | < 60 C | 60-74.9 C | >= 75 C |
+
+Current: the BLF189XRA datasheet gives no maximum drain current, so the limits come from the power budget.
+1.3 kW at 48-50 V and about 70 % drain efficiency is roughly 37-39 A, and the amp's own gauge ends at 40 A.
+Temp: Tj max is 225 C and Rth(j-c) is 0.11 K/W. At 1250 W CW and about 70 % efficiency the device
+dissipates about 540 W, or about 59 K from junction to case. Holding Tj to 150 C leaves about 90 C at the case, and
+a heatsink sensor reads some 10-15 C lower, so red starts at 75 C. The sensor location is unknown, so adjust
+`ZONES` in `web/src/hf-amp.js` after watching real readings.
+
 ## Build and test
 
     cd web && npm run build && cd ..

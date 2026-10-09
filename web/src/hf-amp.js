@@ -29,21 +29,40 @@ async function call(api, method, path, body) {
 const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
 
 const HOLD_MS = 5000;
+
+// Meter colour zones: 'ok' (green) below `warn`, 'warn' (yellow) from `warn`, 'bad' (red) from `bad`.
+// Output, input, supply and SWR limits are the owner's; current and temperature are derived (see README).
+const ZONES = {
+  Output: { warn: 600, bad: 1200 },                 // W
+  Input: { warn: 3, bad: 5 },                       // W
+  SWR: { warn: 1.7, bad: 2.5, strict: true },       // :1, green up to and including 1.7
+  Supply: { warn: 48.4, bad: 53 },                  // V
+  Current: { warn: 30, bad: 38 },                   // A, vs the 40 A full scale of the amp's gauge
+  Temp: { warn: 60, bad: 75 },                      // deg C at the amp's sensor
+};
+function zoneOf(value, z) {
+  if (value == null || !z) return null;
+  const over = (limit) => (z.strict ? value > limit : value >= limit);
+  return over(z.bad) ? 'bad' : over(z.warn) ? 'warn' : 'ok';
+}
+const ZONE_WORD = { warn: 'Caution', bad: 'Danger' };
 const pctOf = (v, min, max) => (v == null ? 0 : Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100)));
 
 // One meter row: label + value on top, tick-marked bar below, optional held-peak marker.
-function Meter({ label, value, unit, min = 0, max, digits, live, warnAt, peak }) {
+function Meter({ label, value, unit, min = 0, max, digits, live, zone, peak }) {
   const pct = pctOf(value, min, max);
-  const warn = live && warnAt != null && pct >= warnAt;
+  const z = live ? zone : null;
   const peakPct = peak == null ? null : pctOf(peak, min, max);
+  const word = ZONE_WORD[z];
   return h('div', { className: 'hfa-meter' },
     h('div', { className: 'hfa-meter-head' },
       h('span', { className: 'hfa-label' }, label),
+      word ? h('span', { className: `hfa-zone ${z}` }, word) : null,
       h('span', { className: 'val' }, fmt(value, digits), h('span', { className: 'unit' }, unit))),
     h('div', {
-      className: `hfa-bar${live ? '' : ' stale'}${warn ? ' warn' : ''}`, role: 'meter', 'aria-label': label,
+      className: `hfa-bar${live ? '' : ' stale'}${z ? ` z-${z}` : ''}`, role: 'meter', 'aria-label': label,
       'aria-valuemin': min, 'aria-valuemax': max, 'aria-valuenow': value == null ? min : Number(value.toFixed(2)),
-      'aria-valuetext': value == null ? 'no reading' : `${fmt(value, digits)} ${unit}`,
+      'aria-valuetext': value == null ? 'no reading' : `${fmt(value, digits)} ${unit}${word ? `, ${word.toLowerCase()}` : ''}`,
     },
       h('i', { style: { width: `${pct}%` } }),
       peakPct != null && peakPct > pct + 0.5
@@ -51,9 +70,9 @@ function Meter({ label, value, unit, min = 0, max, digits, live, warnAt, peak })
         : null));
 }
 
-function Read({ k, v }) {
-  return h('div', { className: 'hfa-read' },
-    h('span', { className: 'hfa-label' }, k),
+function Read({ k, v, zone, big }) {
+  return h('div', { className: `hfa-read${big ? ' big' : ''}${zone ? ` z-${zone}` : ''}` },
+    h('span', { className: 'hfa-label' }, k, ZONE_WORD[zone] ? h('span', { className: `hfa-zone ${zone}` }, ZONE_WORD[zone]) : null),
     h('span', { className: 'v' }, v));
 }
 
@@ -198,6 +217,7 @@ function Panel({ api }) {
   const live = !!meters?.fresh;
   const idleLive = connected && !!amp;
   const unconfigured = !c.host;
+  const swrZone = live ? zoneOf(meters.swr, ZONES.SWR) : null;
 
   const pill = unconfigured ? ['Not configured', '']
     : connected ? (tx ? ['Transmitting', 'tx'] : ['Connected', 'ok'])
@@ -281,16 +301,18 @@ function Panel({ api }) {
         ? h('p', { className: 'hfa-empty' }, 'No amplifier address yet. Open settings (the gear) to connect.')
         : null,
       h('div', { className: 'hfa-meters' },
-        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', max: limits.forwardW, digits: 0, live, warnAt: 92, peak: pk('Output') }),
-        h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', max: limits.reflectedW, digits: 0, live, warnAt: 25, peak: pk('Reflected') }),
-        h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', max: limits.inputW, digits: 0, live, peak: pk('Input') }),
-        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', max: limits.currentA, digits: 1, live, warnAt: 90, peak: pk('Current') }),
-        h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: 1, max: 3, digits: 2, live, warnAt: 50, peak: pk('SWR') }),
+        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', max: limits.forwardW, digits: 0, live, zone: zoneOf(meters?.forwardW, ZONES.Output), peak: pk('Output') }),
+        h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', max: limits.reflectedW, digits: 0, live, zone: swrZone || 'ok', peak: pk('Reflected') }),
+        h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', max: limits.inputW, digits: 0, live, zone: zoneOf(meters?.inputW, ZONES.Input), peak: pk('Input') }),
+        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', max: limits.currentA, digits: 1, live, zone: zoneOf(meters?.currentA, ZONES.Current), peak: pk('Current') }),
+        h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: 1, max: 3, digits: 2, live, zone: swrZone, peak: pk('SWR') }),
         h(Meter, { label: 'Efficiency', value: live ? meters.efficiencyPercent : null, unit: '%', max: 100, digits: 0, live }),
-        h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: 40, max: 60, digits: 1, live: idleLive }),
-        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', max: 100, digits: 0, live: idleLive, warnAt: 60 })),
+        h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: 40, max: 60, digits: 1, live: idleLive, zone: zoneOf(amp?.volts, ZONES.Supply) }),
+        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', max: 100, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, ZONES.Temp) })),
       h('div', { className: 'hfa-readouts' },
         h(Read, { k: 'Band', v: amp ? amp.bandName : '—' }),
+        h(Read, { k: 'Output', big: true, zone: live ? zoneOf(meters.forwardW, ZONES.Output) : null,
+          v: idleLive ? `${fmt(live ? meters.forwardW : 0, 0)} W` : '—' }),
         h(Read, { k: 'Antenna', v: amp ? String(amp.antenna) : '—' })),
       msg.text || controls.message || controls.bandSelect
         ? h('div', { className: 'hfa-msg' + (msg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' },
