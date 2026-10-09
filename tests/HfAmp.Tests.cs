@@ -461,12 +461,12 @@ Test("http: status, commands, validation and cross-site protection", async () =>
     (code, _) = await Call(HttpMethod.Post, "command", "{\"action\":\"reset\"}", fetchSite: "cross-site");
     Check(code == 403, "cross-site browser request -> 403");
     (code, _) = await Call(HttpMethod.Post, "command", "{\"action\":\"reset\"}", fetchSite: "same-site");
-    Check(code == 403, "same-site (other origin) -> 403");
+    Check(code == 200, "same-site (Zeus UI on another port) is accepted");
     (code, _) = await Call(HttpMethod.Post, "command", "{\"action\":\"reset\"}", fetchSite: "same-origin");
     Check(code == 200, "same-origin browser request allowed");
     (code, _) = await Call(HttpMethod.Post, "command", "{\"action\":\"note\",\"mode\":\"" + new string('x', 6000) + "\"}");
     Check(code == 413, "oversized body -> 413");
-    Check(amp.Count("23") == 1, "only the one legitimate reset reached the amp");
+    Check(await Until(() => amp.Count("23") == 2), "only the same-site and same-origin resets reached the amp (cross-site was blocked)");
 
     amp.SetTx(true);
     Check(await Until(() => service.Amp.GetSnapshot().Status is { Tx: true }), "tx seen");

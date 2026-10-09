@@ -1,11 +1,13 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 // HF LDMOS amplifier panel. Plain createElement (no JSX, no bundler dependencies).
 // `react` is provided by the Zeus host; styles are inlined by build.mjs.
-import * as React from 'react';
+import * as ReactNS from 'react';
+// Works whether the host exposes React as named exports, a default export, or both.
+const React = ReactNS.default ?? ReactNS;
 
 const h = React.createElement;
 const STYLES = /*__STYLES__*/"";
-const ROOT = 'com-rigeek-hfamp';
+const ROOT = 'com-n1mjf-hfamp';
 const POLL_MS = 250;
 
 function ensureStyles() {
@@ -14,6 +16,14 @@ function ensureStyles() {
   el.id = `${ROOT}-styles`;
   el.textContent = STYLES;
   document.head.appendChild(el);
+}
+
+// callBackend resolves to a fetch Response (not parsed JSON); parse it and surface HTTP errors.
+async function call(api, method, path, body) {
+  const res = await api.callBackend(method, path, body);
+  let data = null;
+  try { data = await res.json(); } catch { /* empty or non-JSON body */ }
+  return { ok: !!res.ok, status: res.status, data };
 }
 
 const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
@@ -47,8 +57,10 @@ function Panel({ api }) {
     let timer = 0;
     const tick = async () => {
       try {
-        const s = await api.callBackend('GET', '/status');
+        const r = await call(api, 'GET', '/status');
         if (stop) return;
+        if (!r.ok || !r.data?.connection) throw new Error(r.data?.message || `HTTP ${r.status}`);
+        const s = r.data;
         setStatus(s);
         setLoadError(null);
         if (!hostTouched.current && s?.connection?.host) setHostDraft(s.connection.host);
@@ -63,8 +75,8 @@ function Panel({ api }) {
 
   const post = async (path, body) => {
     try {
-      const r = await api.callBackend('POST', path, body);
-      setMsg({ text: r?.message || 'Done', err: r?.ok === false });
+      const r = await call(api, 'POST', path, body);
+      setMsg({ text: r.data?.message || (r.ok ? 'Done' : `Request failed (HTTP ${r.status})`), err: !r.ok || r.data?.ok === false });
     } catch (e) {
       setMsg({ text: e?.message || 'Request failed', err: true });
     }

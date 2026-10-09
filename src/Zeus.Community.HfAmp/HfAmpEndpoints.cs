@@ -88,10 +88,12 @@ internal static class HfAmpEndpoints
 
     private static async Task<(T? Value, IResult? Error)> ReadJsonAsync<T>(HttpContext ctx) where T : class
     {
-        // Browsers label every request with Sec-Fetch-Site. Same-origin means the Zeus page itself
-        // (or "none" for a user-initiated navigation); anything else is another site poking at us.
+        // Browsers label every request with Sec-Fetch-Site. The Zeus page may be served from a different
+        // port than the API (same-site, not same-origin), so that is accepted; only a request that
+        // originates from another site is refused. JSON-only bodies add a second layer: a cross-origin
+        // JSON POST needs a CORS preflight, which this server never grants.
         var site = ctx.Request.Headers["Sec-Fetch-Site"].ToString();
-        if (site.Length > 0 && site != "same-origin" && site != "none")
+        if (site.Length > 0 && site != "same-origin" && site != "same-site" && site != "none")
             return (null, Refuse(403, "Cross-site requests are refused"));
 
         if (!ctx.Request.HasJsonContentType())
