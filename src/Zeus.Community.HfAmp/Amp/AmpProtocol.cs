@@ -140,18 +140,22 @@ internal readonly record struct Readings(
     double? Swr, double? EfficiencyPercent);
 
 /// <summary>
-/// Meter calibration. Fitted to a single screenshot of the vendor application
-/// (458 W forward, 21 W reflected, 2 W input, 15.2 A on 40 m) plus the shape of
-/// a power ramp. Treat it as roughly +/-2 % and possibly band dependent until
-/// it has been checked against a power meter at other levels and bands.
+/// Meter calibration, fitted to the amplifier's own front-panel readings. Forward power was compared
+/// at five points (42-388 W), reflected power at five (1-29 W) and current at six (0.9-20.5 A); the
+/// ratio was constant across each range (power within about 1 W, current within 0.1 A), so one scale
+/// factor per quantity is enough. The same power scale fits forward and reflected. Input power has
+/// not been compared and uses the same scale. Treat it as roughly +/-3 % and possibly band dependent.
+///
+/// The front panel current is about 1.5 times what the vendor application shows, so it may include
+/// stages other than the final transistors; efficiency below is a drain estimate on that current.
 /// </summary>
 internal static class Calibration
 {
     /// <summary>Power in watts = counts squared / PowerDivisor (square-law detectors).</summary>
-    public const double PowerDivisor = 450.0;
+    public const double PowerDivisor = 475.3;
 
-    /// <summary>Drain current in amps = counts * AmpsPerCount (about 0.7 A of idle bias at 5 counts).</summary>
-    public const double AmpsPerCount = 0.135;
+    /// <summary>Drain current in amps = counts * AmpsPerCount (about 1 A of idle bias at 5 counts).</summary>
+    public const double AmpsPerCount = 0.2051;
 
     /// <summary>Below this forward count the reflected/forward ratio is noise, so no SWR is shown.</summary>
     public const double MinSwrCounts = 30;
@@ -175,10 +179,9 @@ internal static class Calibration
         if (forward >= MinSwrCounts && forward > reflected)
             swr = Math.Min(99.0, (forward + reflected) / (forward - reflected));
 
-        // Drain efficiency estimate: RF output power / DC input power. The
-        // vendor application showed 82 % for the screenshot this was
-        // calibrated on, where this formula gives about 73 %; its exact
-        // definition is unknown, so treat this as an estimate.
+        // Drain efficiency estimate: RF output power / (supply volts x front-panel current).
+        // The vendor application showed 82 % for its own screenshot; its formula is unknown and
+        // cannot be reproduced from these readings, so treat this as an estimate.
         double? eff = null;
         if (fwdW >= MinEfficiencyForwardW && amps >= MinEfficiencyCurrentA && volts > 0)
             eff = Math.Clamp(100.0 * fwdW / (volts * amps), 0.0, 100.0);

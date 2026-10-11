@@ -89,16 +89,34 @@ Test("meter: parse, padding, and rejects", () =>
     return Task.CompletedTask;
 });
 
-Test("calibration reproduces the reference screenshot", () =>
+Test("calibration matches the amplifier's front panel", () =>
 {
-    // Screenshot: 458 W forward, 21 W reflected, 2 W input, 15.2 A, SWR 1.55, 41.8 V
+    // Owner's side-by-side readings, (old app value, amp front panel). The old app value
+    // was counts^2/450 for power and counts*0.135 for current, which recovers the raw counts.
+    (double App, double Amp)[] forward = [(45, 42), (125, 120), (262, 248), (317, 300), (410, 388)];
+    foreach (var (app, amp) in forward)
+    {
+        var w = Calibration.Compute(Math.Sqrt(app * 450), 0, 5, 0, 48).ForwardW;
+        Check(Math.Abs(w - amp) <= Math.Max(2, amp * 0.03), $"forward {app}->{w:F1} want {amp}");
+    }
+    (double App, double Amp)[] reflected = [(2, 1), (7, 6), (11, 10), (18, 17), (31, 29)];
+    foreach (var (app, amp) in reflected)
+    {
+        var w = Calibration.Compute(0, Math.Sqrt(app * 450), 5, 0, 48).ReflectedW;
+        Check(Math.Abs(w - amp) <= 1.2, $"reflected {app}->{w:F1} want {amp}");
+    }
+    (double App, double Amp)[] current = [(.5, .9), (2.2, 3.2), (5.0, 7.5), (7.3, 11.1), (10.1, 15.4), (13.5, 20.5)];
+    foreach (var (app, amp) in current)
+    {
+        var a = Calibration.Compute(0, 0, app / 0.135, 0, 48).CurrentA;
+        Check(Math.Abs(a - amp) <= 0.3, $"current {app}->{a:F2} want {amp}");
+    }
+    // Reference screenshot operating point (counts 454/97/111/30 at 41.8 V), re-expressed on the panel scale.
     var r = Calibration.Compute(454, 97, 111, 30, 41.8);
-    Check(Math.Abs(r.ForwardW - 458) < 3, $"forward {r.ForwardW}");
-    Check(Math.Abs(r.ReflectedW - 21) < 1.5, $"reflected {r.ReflectedW}");
-    Check(Math.Abs(r.InputW - 2) < 0.3, $"input {r.InputW}");
-    Check(Math.Abs(r.CurrentA - 15.2) < 0.5, $"current {r.CurrentA}");
+    Check(Math.Abs(r.ForwardW - 434) < 3, $"forward {r.ForwardW}");
+    Check(Math.Abs(r.CurrentA - 22.8) < 0.3, $"current {r.CurrentA}");
     Check(r.Swr is { } swr && Math.Abs(swr - 1.55) < 0.05, $"swr {r.Swr}");
-    Check(r.EfficiencyPercent is { } e && e > 70 && e < 76, $"efficiency {r.EfficiencyPercent}");
+    Check(r.EfficiencyPercent is { } e && e > 43 && e < 48, $"efficiency {r.EfficiencyPercent}");
     return Task.CompletedTask;
 });
 
@@ -250,9 +268,9 @@ Test("meters: derived readings and efficiency while transmitting, stale afterwar
     Check(await Until(() => c.GetSnapshot().Meter is { Fresh: true }), "meter stream arrived");
     await Task.Delay(300);
     var m = c.GetSnapshot().Meter!;
-    Check(Math.Abs(m.Readings.ForwardW - 458) < 6, $"forward {m.Readings.ForwardW}");
+    Check(Math.Abs(m.Readings.ForwardW - 434) < 6, $"forward {m.Readings.ForwardW}");
     Check(m.Readings.Swr is > 1.45 and < 1.65, $"swr {m.Readings.Swr}");
-    Check(m.Readings.EfficiencyPercent is > 70 and < 76, $"efficiency {m.Readings.EfficiencyPercent}");
+    Check(m.Readings.EfficiencyPercent is > 42 and < 49, $"efficiency {m.Readings.EfficiencyPercent}");
 
     amp.SetTx(false);
     Check(await Until(() => c.GetSnapshot().Meter is { Fresh: false }, 3000), "meter goes stale after TX");

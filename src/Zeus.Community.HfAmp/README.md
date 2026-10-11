@@ -17,8 +17,9 @@ TCP 5005: two-ASCII-digit commands (`11` hello, `31`–`34` antenna, `71`–`78`
 `41`/`42` supply, `45`/`46` fans, `21`/`22` bypass, `23` reset, `99` release); the amp pushes
 `temp,volts*10,band,antenna,flag,tx,fanHigh,bypass` on every change.
 UDP 5010: send `11`; while transmitting the amp streams `fwd,refl,cur,inp` raw counts (~20 Hz).
-Calibration (power = counts²/450, current = counts × 0.135) was fitted to one screenshot and is
-approximate. Field 5 of the status push has never been seen non-zero.
+Calibration (power = counts²/475.3, current = counts × 0.2051) was fitted to side-by-side readings of the
+amplifier's own front panel (forward 42–388 W, reflected 1–29 W, current 0.9–20.5 A) and is good to about 3 %. Input
+power has not been compared. The panel current is about 1.5× what the vendor application shows. Field 5 of the status push has never been seen non-zero.
 
 ## Meter colour zones
 
