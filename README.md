@@ -59,3 +59,5 @@ A fault that is already present when Zeus connects is shown but not announced. W
     cd src/Zeus.Community.HfAmp && pwsh ./build-package.ps1   # script lives beside the .csproj, as in the template
 
 License: GPL-2.0-or-later.
+
+<img width="420" height="800" alt="image" src="https://github.com/user-attachments/assets/72b731e2-7034-4c12-9b6a-7d633fe86eeb" />
