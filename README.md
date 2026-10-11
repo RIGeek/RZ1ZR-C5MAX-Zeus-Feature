@@ -60,8 +60,6 @@ A fault that is already present when Zeus connects is shown but not announced. R
 
 License: GPL-2.0-or-later.
 
-<img width="420" height="800" alt="image" src="https://github.com/user-attachments/assets/72b731e2-7034-4c12-9b6a-7d633fe86eeb" />
-
 ## Screenshots
 
 Rendered from the panel's real code in a test page with stand-in theme colours (Zeus supplies its own).
