@@ -49,7 +49,7 @@ When the amplifier reports a fault the panel shows a red banner (with a Reset bu
 and the standard meters-pane entry reports the amplifier as not operating. A soft two-note chime plays once when the
 fault starts (optionally repeating every 30 s until it clears); volume, on/off and a test button are in Settings. Browsers
 only allow sound after one click or key press in the page, and the chime comes from the browser tab or window that runs Zeus.
-A fault that is already present when Zeus connects is shown but not announced. Whether Reset clears a fault has not been verified.
+A fault that is already present when Zeus connects is shown but not announced. Reset (command `23`) clears a fault, confirmed on the real amplifier.
 
 ## Build and test
 
@@ -61,3 +61,11 @@ A fault that is already present when Zeus connects is shown but not announced. W
 License: GPL-2.0-or-later.
 
 <img width="420" height="800" alt="image" src="https://github.com/user-attachments/assets/72b731e2-7034-4c12-9b6a-7d633fe86eeb" />
+
+## Screenshots
+
+Rendered from the panel's real code in a test page with stand-in theme colours (Zeus supplies its own).
+
+| Transmitting | Fault | Settings |
+| --- | --- | --- |
+| <img src="docs/transmitting.png" width="260" alt="Panel while transmitting, meters coloured by zone"> | <img src="docs/fault.png" width="260" alt="Fault banner for a high-SWR fault with a Reset button"> | <img src="docs/settings.png" width="260" alt="Settings with chime options and adjustable meter ranges"> |
