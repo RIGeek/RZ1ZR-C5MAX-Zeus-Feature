@@ -20,6 +20,7 @@ internal sealed record SettingsRequest(string? Host, bool? FollowBand);
 internal static class HfAmpEndpoints
 {
     private const int MaxBodyBytes = 4096;
+    private const int MaxPrefsBytes = 16384;
 
     public static void Map(IEndpointRouteBuilder endpoints, Func<HfAmpService?> service)
     {
@@ -27,7 +28,23 @@ internal static class HfAmpEndpoints
             With(ctx, service, s => Results.Json(s.BuildStatus())));
 
         endpoints.MapGet("settings", (HttpContext ctx) =>
-            With(ctx, service, s => Results.Json(s.GetSettings())));
+            With(ctx, service, s => Results.Json(new { host = s.GetSettings().Host, followBand = s.GetSettings().FollowBand })));
+
+        endpoints.MapGet("prefs", (HttpContext ctx) =>
+            With(ctx, service, s => Results.Text(s.GetPrefs() ?? "{}", "application/json")));
+
+        endpoints.MapPost("prefs", async (HttpContext ctx) =>
+        {
+            var s = service();
+            if (s is null) return Unavailable();
+
+            var (body, error) = await ReadJsonAsync<JsonElement?>(ctx, MaxPrefsBytes);
+            if (error is not null) return error;
+            if (body is not { ValueKind: JsonValueKind.Object } prefs)
+                return Refuse(400, "Display settings must be a JSON object");
+
+            return Reply(ctx, await s.SetPrefsAsync(prefs.GetRawText(), ctx.RequestAborted));
+        });
 
         endpoints.MapPost("settings", async (HttpContext ctx) =>
         {
@@ -86,7 +103,7 @@ internal static class HfAmpEndpoints
     private static IResult Refuse(int status, string message) =>
         Results.Json(new { ok = false, message }, statusCode: status);
 
-    private static async Task<(T? Value, IResult? Error)> ReadJsonAsync<T>(HttpContext ctx) where T : class
+    private static async Task<(T? Value, IResult? Error)> ReadJsonAsync<T>(HttpContext ctx, int maxBytes = MaxBodyBytes)
     {
         // Browsers label every request with Sec-Fetch-Site. The Zeus page may be served from a different
         // port than the API (same-site, not same-origin), so that is accepted; only a request that
@@ -94,24 +111,24 @@ internal static class HfAmpEndpoints
         // JSON POST needs a CORS preflight, which this server never grants.
         var site = ctx.Request.Headers["Sec-Fetch-Site"].ToString();
         if (site.Length > 0 && site != "same-origin" && site != "same-site" && site != "none")
-            return (null, Refuse(403, "Cross-site requests are refused"));
+            return (default, Refuse(403, "Cross-site requests are refused"));
 
         if (!ctx.Request.HasJsonContentType())
-            return (null, Refuse(415, "Content-Type must be application/json"));
+            return (default, Refuse(415, "Content-Type must be application/json"));
 
-        if (ctx.Request.ContentLength is > MaxBodyBytes)
-            return (null, Refuse(413, "Request body too large"));
+        if (ctx.Request.ContentLength > maxBytes)
+            return (default, Refuse(413, "Request body too large"));
         var limit = ctx.Features.Get<IHttpMaxRequestBodySizeFeature>();
-        if (limit is { IsReadOnly: false }) limit.MaxRequestBodySize = MaxBodyBytes;
+        if (limit is { IsReadOnly: false }) limit.MaxRequestBodySize = maxBytes;
 
         try
         {
             var value = await ctx.Request.ReadFromJsonAsync<T>(ctx.RequestAborted);
-            return value is null ? (null, Refuse(400, "Empty request")) : (value, null);
+            return value is null ? (default, Refuse(400, "Empty request")) : (value, null);
         }
         catch (Exception ex) when (ex is JsonException or BadHttpRequestException or InvalidOperationException)
         {
-            return (null, Refuse(400, "Malformed request"));
+            return (default, Refuse(400, "Malformed request"));
         }
     }
 }

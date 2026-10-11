@@ -49,6 +49,14 @@ internal static class AmpProtocol
         return "7" + n.ToString(CultureInfo.InvariantCulture);
     }
 
+    /// <summary>Status field 5 is the fault code: 0 is healthy. Only 3 (high SWR) has been observed.</summary>
+    public static string? FaultText(int code) => code switch
+    {
+        0 => null,
+        3 => "High SWR",
+        _ => $"Fault code {code}",
+    };
+
     public static string BandName(int band) =>
         band >= 1 && band <= BandCount ? BandNames[band - 1] : "?";
 }

@@ -14,7 +14,7 @@ internal sealed record ApiConnection(string State, string? Host, string? Error);
 
 internal sealed record ApiAmp(
     int TempC, double Volts, int Band, string BandName, int Antenna, int Flag4,
-    bool Tx, bool FanHigh, bool Bypass, bool HighVoltage);
+    bool Fault, string? FaultText, bool Tx, bool FanHigh, bool Bypass, bool HighVoltage);
 
 internal sealed record ApiMeters(
     bool Fresh, double ForwardW, double ReflectedW, double InputW, double CurrentA,
@@ -76,7 +76,7 @@ internal sealed class HfAmpService : IAsyncDisposable
         await _settingsLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var normalized = new AmpSettings(host, next.FollowBand);
+            var normalized = new AmpSettings(host, next.FollowBand, _settings.UiPrefs);
             var hostChanged = !string.Equals(_settings.Host, host, StringComparison.OrdinalIgnoreCase);
 
             await _store.SaveAsync(normalized, ct).ConfigureAwait(false);
@@ -91,13 +91,32 @@ internal sealed class HfAmpService : IAsyncDisposable
         }
     }
 
+    /// <summary>Panel appearance (meter ranges, colour zones, chime). Opaque JSON object owned by the panel.</summary>
+    public string? GetPrefs() => _settings.UiPrefs;
+
+    public async Task<CommandResult> SetPrefsAsync(string? prefsJson, CancellationToken ct)
+    {
+        await _settingsLock.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            var next = _settings with { UiPrefs = prefsJson };
+            await _store.SaveAsync(next, ct).ConfigureAwait(false);
+            _settings = next;
+            return CommandResult.Success("Display settings saved");
+        }
+        finally
+        {
+            _settingsLock.Release();
+        }
+    }
+
     public ApiStatus BuildStatus()
     {
         var s = Amp.GetSnapshot();
 
         ApiAmp? amp = s.Status is { } st
             ? new ApiAmp(st.TempC, st.Volts, st.Band, AmpProtocol.BandName(st.Band), st.Antenna, st.Flag4,
-                st.Tx, st.FanHigh, st.Bypass, st.HighVoltage)
+                st.Flag4 != 0, AmpProtocol.FaultText(st.Flag4), st.Tx, st.FanHigh, st.Bypass, st.HighVoltage)
             : null;
 
         ApiMeters? meters = s.Meter is { } m

@@ -486,8 +486,39 @@ Test("http: status, commands, validation and cross-site protection", async () =>
     Check(code == 413, "oversized body -> 413");
     Check(await Until(() => amp.Count("23") == 2), "only the same-site and same-origin resets reached the amp (cross-site was blocked)");
 
-    amp.SetTx(true);
-    Check(await Until(() => service.Amp.GetSnapshot().Status is { Tx: true }), "tx seen");
+    // display preferences: opaque JSON object, persisted, must be an object, size-capped
+    (code, var pr) = await Call(HttpMethod.Get, "prefs");
+    Check(code == 200 && pr.ValueKind == JsonValueKind.Object, "prefs default to an empty object");
+    (code, _) = await Call(HttpMethod.Post, "prefs", "{\"zones\":{\"swr\":[1.7,2.5]},\"chime\":{\"on\":true}}");
+    Check(code == 200, "prefs accepted");
+    (code, pr) = await Call(HttpMethod.Get, "prefs");
+    Check(pr.GetProperty("zones").GetProperty("swr")[1].GetDouble() == 2.5, "prefs round-trip");
+    (code, _) = await Call(HttpMethod.Post, "prefs", "[1,2]");
+    Check(code == 400, "prefs must be an object");
+    (code, _) = await Call(HttpMethod.Post, "prefs", "{\"x\":\"" + new string('x', 20000) + "\"}");
+    Check(code == 413, "oversized prefs -> 413");
+    (code, _) = await Call(HttpMethod.Post, "prefs", "{}", fetchSite: "cross-site");
+    Check(code == 403, "cross-site prefs -> 403");
+    (code, _) = await Call(HttpMethod.Post, "settings", "{\"followBand\":true}");
+    (code, pr) = await Call(HttpMethod.Get, "prefs");
+    Check(pr.TryGetProperty("zones", out _), "saving connection settings keeps display prefs");
+    (code, st) = await Call(HttpMethod.Get, "settings");
+    Check(!st.TryGetProperty("uiPrefs", out _), "settings route does not leak prefs");
+
+    // fault code (status field 5): 0 healthy, 3 high SWR
+    (code, st) = await Call(HttpMethod.Get, "status");
+    Check(!st.GetProperty("amp").GetProperty("fault").GetBoolean(), "no fault when code is 0");
+    amp.Flag4 = 3; amp.SetTx(true);
+    Check(await Until(() => service.Amp.GetSnapshot().Status is { Flag4: 3 }), "fault seen");
+    (code, st) = await Call(HttpMethod.Get, "status");
+    Check(st.GetProperty("amp").GetProperty("fault").GetBoolean()
+        && st.GetProperty("amp").GetProperty("faultText").GetString() == "High SWR", "fault reported as High SWR");
+    amp.Flag4 = 9; amp.Push();
+    Check(await Until(() => service.Amp.GetSnapshot().Status is { Flag4: 9 }), "other code seen");
+    (code, st) = await Call(HttpMethod.Get, "status");
+    Check(st.GetProperty("amp").GetProperty("faultText").GetString() == "Fault code 9", "unknown code still reported");
+    amp.Flag4 = 0; amp.Push();
+
     (code, r) = await Call(HttpMethod.Post, "command", "{\"action\":\"antenna\",\"antenna\":2}");
     Check(code == 409 && !r.GetProperty("ok").GetBoolean(), "interlock surfaces as 409");
 
@@ -588,7 +619,7 @@ sealed class MockAmp : IAsyncDisposable
 
     public void DropConnection() { try { _client?.Close(); } catch { } }
 
-    private void Push()
+    public void Push()
     {
         var s = _stream;
         if (s is null) return;

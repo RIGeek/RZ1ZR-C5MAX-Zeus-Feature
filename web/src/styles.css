@@ -65,3 +65,22 @@
 .com-n1mjf-hfamp .hfa-zone.warn { color: var(--amber); }
 .com-n1mjf-hfamp .hfa-zone.bad { color: var(--tx); }
 .com-n1mjf-hfamp .hfa-meter-head .hfa-zone { margin-right: auto; }
+.com-n1mjf-hfamp .hfa-card.faulted { border-color: var(--tx); }
+.com-n1mjf-hfamp .hfa-fault { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--tx); border-left-width: 4px; border-radius: var(--r-sm); background: var(--bg-inset); color: var(--fg-0); }
+.com-n1mjf-hfamp .hfa-fault-icon { flex: none; color: var(--tx); }
+.com-n1mjf-hfamp .hfa-fault-text { display: grid; gap: 2px; flex: 1 1 160px; min-width: 0; font-size: 12px; }
+.com-n1mjf-hfamp .hfa-fault-text strong { color: var(--tx); font-size: 13px; letter-spacing: .04em; text-transform: uppercase; }
+.com-n1mjf-hfamp .hfa-fault-text span { color: var(--fg-1); }
+.com-n1mjf-hfamp .hfa-fault button { flex: none; border-color: var(--tx); }
+.com-n1mjf-hfamp .hfa-range { display: grid; gap: 5px; padding: 8px 0; border-top: 1px solid var(--line); }
+.com-n1mjf-hfamp .hfa-range-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
+.com-n1mjf-hfamp .hfa-range-name { font-size: 12px; font-weight: 700; color: var(--fg-0); }
+.com-n1mjf-hfamp .hfa-range-name .unit { font-weight: 400; color: var(--fg-3); }
+.com-n1mjf-hfamp .hfa-range-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(84px, 1fr)); gap: 6px; }
+.com-n1mjf-hfamp .hfa-num { display: grid; gap: 2px; min-width: 0; }
+.com-n1mjf-hfamp .hfa-grow { flex: 1 1 140px; }
+.com-n1mjf-hfamp .hfa-chime-row { align-items: end; }
+.com-n1mjf-hfamp input[type="number"] { font: inherit; font-family: var(--font-mono); font-size: 13px; color: var(--fg-0); background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 4px 6px; min-height: 30px; min-width: 0; width: 100%; }
+.com-n1mjf-hfamp input[type="number"][aria-invalid="true"] { border-color: var(--amber); }
+.com-n1mjf-hfamp input[type="range"] { accent-color: var(--accent); width: 100%; min-height: 24px; }
+.com-n1mjf-hfamp .hfa-strip { height: 6px; border-radius: var(--r-xs); border: 1px solid var(--line); }

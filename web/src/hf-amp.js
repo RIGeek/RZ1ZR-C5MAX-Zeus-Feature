@@ -29,22 +29,166 @@ async function call(api, method, path, body) {
 const fmt = (v, d = 0) => (v == null || Number.isNaN(v) ? '—' : Number(v).toFixed(d));
 
 const HOLD_MS = 5000;
+const REMIND_MS = 30000;
 
-// Meter colour zones: 'ok' (green) below `warn`, 'warn' (yellow) from `warn`, 'bad' (red) from `bad`.
-// Output, input, supply and SWR limits are the owner's; current and temperature are derived (see README).
-const ZONES = {
-  Output: { warn: 600, bad: 1200 },                 // W
-  Input: { warn: 3, bad: 5 },                       // W
-  SWR: { warn: 1.7, bad: 2.5, strict: true },       // :1, green up to and including 1.7
-  Supply: { warn: 48.4, bad: 53 },                  // V
-  Current: { warn: 30, bad: 38 },                   // A, vs the 40 A full scale of the amp's gauge
-  Temp: { warn: 60, bad: 75 },                      // deg C at the amp's sensor
+// Meter ranges and colour zones. Every value can be changed in Settings (this is for any DIY LDMOS amp).
+// Green is below `warn`, yellow from `warn`, red from `bad`. Defaults are the RZ1ZR C5MAX owner's limits;
+// current and temperature are derived values (see README). `zones: false` meters have a range only.
+const METER_DEFS = [
+  { key: 'Output',     title: 'Output',     unit: 'W',  step: 1,   d: { min: 0, max: 1300, warn: 600,  bad: 1200 } },
+  { key: 'Reflected',  title: 'Reflected',  unit: 'W',  step: 1,   d: { min: 0, max: 100 }, zones: false, note: 'Coloured by SWR' },
+  { key: 'Input',      title: 'Input',      unit: 'W',  step: 0.1, d: { min: 0, max: 15,   warn: 3,    bad: 5 } },
+  { key: 'Current',    title: 'Current',    unit: 'A',  step: 0.5, d: { min: 0, max: 40,   warn: 30,   bad: 38 } },
+  { key: 'SWR',        title: 'SWR',        unit: ':1', step: 0.1, d: { min: 1, max: 3,    warn: 1.7,  bad: 2.5 }, strict: true },
+  { key: 'Efficiency', title: 'Efficiency', unit: '%',  step: 1,   d: { min: 0, max: 100 }, zones: false },
+  { key: 'Supply',     title: 'Supply',     unit: 'V',  step: 0.1, d: { min: 40, max: 60,  warn: 48.4, bad: 53 } },
+  { key: 'Temp',       title: 'Temp',       unit: '°C', step: 1,   d: { min: 0, max: 100,  warn: 60,   bad: 75 } },
+];
+const DEFAULT_PREFS = {
+  peakHold: false,
+  chime: { on: true, volume: 0.5, repeat: false },
+  meters: Object.fromEntries(METER_DEFS.map((m) => [m.key, { ...m.d }])),
 };
-function zoneOf(value, z) {
-  if (value == null || !z) return null;
-  const over = (limit) => (z.strict ? value > limit : value >= limit);
+const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
+
+// Merge whatever was stored onto the defaults, dropping anything malformed.
+function normalizePrefs(raw) {
+  const r = raw && typeof raw === 'object' ? raw : {};
+  const meters = {};
+  for (const m of METER_DEFS) {
+    const src = r.meters?.[m.key] ?? {};
+    const out = { ...m.d };
+    for (const f of Object.keys(m.d)) if (isNum(src[f])) out[f] = src[f];
+    meters[m.key] = validateMeter(m, out) ? out : { ...m.d };
+  }
+  const c = r.chime ?? {};
+  return {
+    peakHold: !!r.peakHold,
+    chime: {
+      on: c.on === undefined ? true : !!c.on,
+      volume: isNum(c.volume) ? Math.max(0, Math.min(1, c.volume)) : 0.5,
+      repeat: !!c.repeat,
+    },
+    meters,
+  };
+}
+
+// Returns an error string, or null when the range and zones make sense.
+function validateMeter(m, v) {
+  if (!(v.min < v.max)) return 'Minimum must be below maximum';
+  if (m.zones !== false) {
+    if (!(v.warn <= v.bad)) return 'Yellow must not be above red';
+  }
+  return null;
+}
+
+// Shared by the panel and the meters-pane hook, so both see the same ranges. Persisted by the backend
+// (survives restarts, shared by every browser); localStorage only seeds the first paint.
+const prefsStore = { value: normalizePrefs(loadJsonEarly()), listeners: new Set(), loading: null, timer: 0 };
+function loadJsonEarly() {
+  try { return JSON.parse(localStorage.getItem('com-n1mjf-hfamp.prefs') || '{}') || {}; } catch { return {}; }
+}
+function setPrefsLocal(v) {
+  prefsStore.value = v;
+  try { localStorage.setItem('com-n1mjf-hfamp.prefs', JSON.stringify(v)); } catch { /* storage unavailable */ }
+  prefsStore.listeners.forEach((f) => f());
+}
+function loadPrefs(api) {
+  prefsStore.loading ??= (async () => {
+    try {
+      const r = await call(api, 'GET', '/prefs');
+      if (r.ok && r.data && Object.keys(r.data).length) setPrefsLocal(normalizePrefs(r.data));
+    } catch { prefsStore.loading = null; /* retry on the next call */ }
+  })();
+  return prefsStore.loading;
+}
+// Saves now, or after a short pause for sliders that fire continuously.
+function savePrefs(api, v, { delay = 0 } = {}) {
+  setPrefsLocal(v);
+  clearTimeout(prefsStore.timer);
+  const send = async () => {
+    try {
+      const r = await call(api, 'POST', '/prefs', v);
+      return { ok: r.ok, message: r.data?.message || (r.ok ? 'Saved' : `Save failed (HTTP ${r.status})`) };
+    } catch (e) {
+      return { ok: false, message: e?.message || 'Save failed' };
+    }
+  };
+  if (delay <= 0) return send();
+  prefsStore.timer = setTimeout(send, delay);
+  return Promise.resolve({ ok: true, message: '' });
+}
+function usePrefs() {
+  const [, bump] = React.useState(0);
+  React.useEffect(() => {
+    const f = () => bump((n) => n + 1);
+    prefsStore.listeners.add(f);
+    return () => prefsStore.listeners.delete(f);
+  }, []);
+  return prefsStore.value;
+}
+
+function zoneOf(value, z, strict) {
+  if (value == null || !z || z.warn == null) return null;
+  const over = (limit) => (strict ? value > limit : value >= limit);
   return over(z.bad) ? 'bad' : over(z.warn) ? 'warn' : 'ok';
 }
+
+// ---- Fault chime: two soft sine notes with a gentle decay. Browsers only allow sound after the person
+// has clicked or pressed a key in the page once; unlockAudio() is wired to the first such gesture.
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    audioCtx ??= new AC();
+    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
+  } catch { /* audio unavailable */ }
+}
+function audioState() {
+  if (!(window.AudioContext || window.webkitAudioContext)) return 'unsupported';
+  return audioCtx && audioCtx.state === 'running' ? 'ready' : 'locked';
+}
+function playChime(volume) {
+  if (audioState() !== 'ready') return false;
+  const t0 = audioCtx.currentTime + 0.02;
+  const peak = 0.22 * Math.max(0, Math.min(1, volume));   // never louder than a quarter of full scale
+  if (peak <= 0) return true;
+  [[784, 0], [587.33, 0.32]].forEach(([freq, at]) => {    // G5 then D5: falling, soft, not shrill
+    for (const [mult, level] of [[1, 1], [2, 0.18]]) {    // a faint octave adds a bell-like warmth
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq * mult;
+      const t = t0 + at;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(peak * level, t + 0.03);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.85);
+      osc.connect(gain).connect(audioCtx.destination);
+      osc.start(t);
+      osc.stop(t + 0.9);
+    }
+  });
+  return true;
+}
+
+// Edge-detects faults from any status feed (panel poll or meters-pane hook). One chime when a fault
+// starts, optionally a reminder every 30 s while it lasts. A fault already present when we first look
+// is shown but not announced.
+const faultMonitor = { active: false, seen: false, last: 0 };
+function feedFaults(status, chime) {
+  const amp = status?.amp;
+  if (status?.connection?.state !== 'connected' || !amp) return;
+  const fault = !!amp.fault;
+  const now = Date.now();
+  if (fault && chime.on) {
+    if (!faultMonitor.active && faultMonitor.seen) { playChime(chime.volume); faultMonitor.last = now; }
+    else if (faultMonitor.active && chime.repeat && now - faultMonitor.last >= REMIND_MS) { playChime(chime.volume); faultMonitor.last = now; }
+  }
+  faultMonitor.active = fault;
+  faultMonitor.seen = true;
+}
+
 const ZONE_WORD = { warn: 'Caution', bad: 'Danger' };
 const pctOf = (v, min, max) => (v == null ? 0 : Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100)));
 
@@ -76,6 +220,13 @@ function Read({ k, v, zone, big }) {
     h('span', { className: 'v' }, v));
 }
 
+function Warn() {
+  return h('svg', {
+    width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2.2,
+    strokeLinecap: 'round', strokeLinejoin: 'round', 'aria-hidden': 'true', focusable: 'false', className: 'hfa-fault-icon',
+  }, h('path', { d: 'M12 3 2.5 20h19L12 3z' }), h('path', { d: 'M12 10v4.5' }), h('path', { d: 'M12 17.6v.1' }));
+}
+
 function Gear() {
   const spokes = Array.from({ length: 8 }, (_, i) => {
     const a = (i * Math.PI) / 4;
@@ -91,7 +242,6 @@ function Gear() {
 }
 
 const STORE = `${ROOT}.sections`;
-const PREFS = `${ROOT}.prefs`;
 function loadJson(key) {
   try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch { return {}; }
 }
@@ -120,6 +270,41 @@ function peakInputs(s) {
   return { Output: m.forwardW, Reflected: m.reflectedW, Input: m.inputW, Current: m.currentA, SWR: m.swr };
 }
 
+const toDraft = (meters) => Object.fromEntries(Object.entries(meters).map(([k, v]) =>
+  [k, Object.fromEntries(Object.entries(v).map(([f, x]) => [f, String(x)]))]));
+const fromDraft = (d) => Object.fromEntries(Object.entries(d).map(([f, x]) => [f, x === '' ? NaN : Number(x)]));
+
+// Row in Settings: one meter's range and colour thresholds, edited as text and applied on Save.
+function RangeRow({ def, draft, error, onChange }) {
+  const zoned = def.zones !== false;
+  const n = (v) => (v === '' || v == null ? NaN : Number(v));
+  const lo = n(draft.min), hi = n(draft.max), w = n(draft.warn), b = n(draft.bad);
+  const ok = Number.isFinite(lo) && Number.isFinite(hi) && hi > lo;
+  const p = (v) => (ok ? pctOf(v, lo, hi) : 0);
+  const field = (f, label) => h('label', { className: 'hfa-num' },
+    h('span', { className: 'hfa-label' }, label),
+    h('input', {
+      type: 'number', inputMode: 'decimal', step: def.step, value: draft[f] ?? '',
+      'aria-label': `${def.title} ${label.toLowerCase()} (${def.unit})`, 'aria-invalid': !!error,
+      onChange: (e) => onChange(f, e.target.value),
+    }));
+  return h('div', { className: 'hfa-range' },
+    h('div', { className: 'hfa-range-head' },
+      h('span', { className: 'hfa-range-name' }, def.title, h('span', { className: 'unit' }, ` ${def.unit}`)),
+      def.note ? h('span', { className: 'hfa-note' }, def.note) : null),
+    h('div', { className: 'hfa-range-fields' },
+      field('min', 'Min'), field('max', 'Max'),
+      zoned ? field('warn', 'Yellow from') : null,
+      zoned ? field('bad', 'Red from') : null),
+    zoned && ok && Number.isFinite(w) && Number.isFinite(b)
+      ? h('div', {
+        className: 'hfa-strip', 'aria-hidden': 'true',
+        style: { background: `linear-gradient(90deg, var(--ok) 0 ${p(w)}%, var(--amber) ${p(w)}% ${p(b)}%, var(--tx) ${p(b)}% 100%)` },
+      })
+      : null,
+    error ? h('p', { className: 'hfa-msg err', role: 'alert' }, `${def.title}: ${error}`) : null);
+}
+
 function Panel({ api }) {
   const [status, setStatus] = React.useState(null);
   const [loadError, setLoadError] = React.useState(null);
@@ -127,9 +312,11 @@ function Panel({ api }) {
   const [hostDraft, setHostDraft] = React.useState('');
   const hostTouched = React.useRef(false);
   const [openMap, setOpenMap] = React.useState(() => loadJson(STORE));
-  const [prefs, setPrefs] = React.useState(() => loadJson(PREFS));
+  const prefs = usePrefs();
+  const [draft, setDraft] = React.useState(null);              // unsaved range edits, keyed by meter
+  const [rangeMsg, setRangeMsg] = React.useState({ text: '', err: false });
   const [view, setView] = React.useState('main');            // 'main' | 'settings'
-  const peakHold = !!prefs.peakHold;
+  const peakHold = prefs.peakHold;
   const peakHoldRef = React.useRef(peakHold);
   const peaks = React.useRef({});
   const gearRef = React.useRef(null);
@@ -137,6 +324,8 @@ function Panel({ api }) {
   const wasSettings = React.useRef(false);
 
   peakHoldRef.current = peakHold;
+
+  React.useEffect(() => { loadPrefs(api); }, [api]);
 
   React.useEffect(() => {
     let stop = false;
@@ -147,6 +336,7 @@ function Panel({ api }) {
         if (stop) return;
         if (!r.ok || !r.data?.connection) throw new Error(r.data?.message || `HTTP ${r.status}`);
         const s = r.data;
+        feedFaults(s, prefsStore.value.chime);
         // Peak hold: a peak stays for HOLD_MS, then falls to the current value.
         const now = Date.now();
         if (peakHoldRef.current) {
@@ -196,11 +386,13 @@ function Panel({ api }) {
     saveJson(STORE, next);
     return next;
   });
-  const setPref = (k, v) => setPrefs((p) => {
-    const next = { ...p, [k]: v };
-    saveJson(PREFS, next);
-    return next;
-  });
+  // Toggles and the volume slider save straight away; ranges wait for the Save button.
+  const updatePrefs = (patch, opts) => {
+    savePrefs(api, { ...prefsStore.value, ...patch }, opts).then((r) => {
+      if (!r.ok) setMsg({ text: r.message, err: true });
+    });
+  };
+  const setChime = (patch, opts) => updatePrefs({ chime: { ...prefsStore.value.chime, ...patch } }, opts);
 
   if (!status) {
     return h('div', { className: ROOT },
@@ -210,17 +402,20 @@ function Panel({ api }) {
           loadError ? `Unavailable: ${loadError}` : 'Loading…')));
   }
 
-  const { connection: c, amp, meters, controls, follow, limits } = status;
+  const { connection: c, amp, meters, controls, follow } = status;
   const connected = c.state === 'connected';
   const tx = !!amp?.tx;
   const lockTx = tx; // band/antenna/supply changes are refused by the backend while transmitting
   const live = !!meters?.fresh;
   const idleLive = connected && !!amp;
   const unconfigured = !c.host;
-  const swrZone = live ? zoneOf(meters.swr, ZONES.SWR) : null;
+  const M = prefs.meters;
+  const swrZone = live ? zoneOf(meters.swr, M.SWR, true) : null;
+  const fault = !!amp?.fault;
+  const faultText = amp?.faultText || 'Fault';
 
   const pill = unconfigured ? ['Not configured', '']
-    : connected ? (tx ? ['Transmitting', 'tx'] : ['Connected', 'ok'])
+    : connected ? (fault ? ['Fault', 'tx'] : tx ? ['Transmitting', 'tx'] : ['Connected', 'ok'])
     : [c.state === 'connecting' ? 'Connecting…' : 'Disconnected', 'warn'];
 
   // ------------------------------------------------------------------ settings view
@@ -228,11 +423,25 @@ function Panel({ api }) {
     const followLabel = follow.radioBand
       ? `Radio ${fmt(follow.radioHz / 1e6, 3)} MHz → ${controls.bands[follow.radioBand - 1]}`
       : follow.radioHz ? `Radio ${fmt(follow.radioHz / 1e6, 3)} MHz (outside amp bands)` : '';
+    const draftNow = draft ?? toDraft(prefs.meters);
+    const rangeErrors = {};
+    for (const def of METER_DEFS) {
+      const parsed = fromDraft(draftNow[def.key]);
+      const err = Object.values(parsed).some((v) => !Number.isFinite(v)) ? 'Enter a number in every box' : validateMeter(def, parsed);
+      if (err) rangeErrors[def.key] = err;
+    }
+    const saveRanges = async () => {
+      const meters = {};
+      for (const def of METER_DEFS) meters[def.key] = fromDraft(draftNow[def.key]);
+      const r = await savePrefs(api, { ...prefsStore.value, meters });
+      setRangeMsg({ text: r.ok ? 'Ranges saved' : r.message, err: !r.ok });
+      if (r.ok) setDraft(null);
+    };
     return h('div', { className: ROOT },
       h('section', { className: 'hfa-card', 'aria-label': 'HF amplifier settings' },
         h('div', { className: 'hfa-head' },
           h('h2', { className: 'hfa-title' }, 'Settings'),
-          h('button', { type: 'button', onClick: () => setView('main') }, 'Done')),
+          h('button', { type: 'button', onClick: () => { setDraft(null); setRangeMsg({ text: '', err: false }); setView('main'); } }, 'Done')),
         h('form', {
           className: 'hfa-group',
           onSubmit: (e) => { e.preventDefault(); hostTouched.current = false; post('/settings', { host: hostDraft.trim() }); },
@@ -258,9 +467,43 @@ function Panel({ api }) {
             : h('p', { className: 'hfa-note' }, 'Radio state is not available, so band following is off.')),
         h('div', { className: 'hfa-group' },
           h('label', { className: 'hfa-check' },
-            h('input', { type: 'checkbox', checked: peakHold, onChange: (e) => setPref('peakHold', e.target.checked) }),
+            h('input', { type: 'checkbox', checked: peakHold, onChange: (e) => updatePrefs({ peakHold: e.target.checked }) }),
             'Peak hold (5 s)'),
           h('p', { className: 'hfa-note' }, 'Marks the highest output, reflected, input, current and SWR reading for five seconds.')),
+        h('div', { className: 'hfa-group' },
+          h('label', { className: 'hfa-check' },
+            h('input', { type: 'checkbox', checked: prefs.chime.on, onChange: (e) => setChime({ on: e.target.checked }) }),
+            'Chime when the amplifier faults'),
+          h('div', { className: 'hfa-row hfa-chime-row' },
+            h('label', { className: 'hfa-num hfa-grow' },
+              h('span', { className: 'hfa-label' }, 'Volume'),
+              h('input', {
+                type: 'range', min: 0, max: 1, step: 0.05, value: prefs.chime.volume, disabled: !prefs.chime.on,
+                'aria-label': 'Chime volume', 'aria-valuetext': `${Math.round(prefs.chime.volume * 100)} percent`,
+                onChange: (e) => setChime({ volume: Number(e.target.value) }, { delay: 500 }),
+              })),
+            h('button', {
+              type: 'button',
+              onClick: () => { unlockAudio(); setTimeout(() => { if (!playChime(prefs.chime.volume)) setMsg({ text: 'The browser is blocking sound. Click anywhere in Zeus and try again.', err: true }); }, 30); },
+            }, 'Test chime')),
+          h('label', { className: 'hfa-check' },
+            h('input', { type: 'checkbox', checked: prefs.chime.repeat, disabled: !prefs.chime.on, onChange: (e) => setChime({ repeat: e.target.checked }) }),
+            'Remind every 30 s until the fault clears'),
+          h('p', { className: 'hfa-note' }, audioState() === 'unsupported'
+            ? 'This browser cannot play sound; the fault banner still appears.'
+            : 'One soft two-note chime when a fault starts. Browsers only allow sound after you have clicked in Zeus once.')),
+        h('div', { className: 'hfa-group' },
+          h('h2', { className: 'hfa-label' }, 'Meter ranges and colours'),
+          h('p', { className: 'hfa-note' }, 'Set these to suit your amplifier. A bar is green below “Yellow from”, yellow from there, and red from “Red from”.'),
+          METER_DEFS.map((def) => h(RangeRow, {
+            key: def.key, def, draft: draftNow[def.key], error: rangeErrors[def.key],
+            onChange: (f, v) => setDraft({ ...draftNow, [def.key]: { ...draftNow[def.key], [f]: v } }),
+          })),
+          h('div', { className: 'hfa-row' },
+            h('button', { type: 'button', disabled: !draft || Object.keys(rangeErrors).length > 0, onClick: saveRanges }, 'Save ranges'),
+            h('button', { type: 'button', onClick: () => { setDraft(toDraft(DEFAULT_PREFS.meters)); setRangeMsg({ text: 'Defaults loaded. Press Save ranges to keep them.', err: false }); } }, 'Reset to defaults'),
+            draft ? h('button', { type: 'button', onClick: () => { setDraft(null); setRangeMsg({ text: '', err: false }); } }, 'Discard') : null),
+          h('div', { className: 'hfa-msg' + (rangeMsg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' }, rangeMsg.text)),
         h('div', { className: 'hfa-msg' + (msg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' }, msg.text)));
   }
 
@@ -287,7 +530,7 @@ function Panel({ api }) {
     ? `Following radio: ${fmt(follow.radioHz / 1e6, 3)} MHz → ${controls.bands[follow.radioBand - 1]}` : '';
 
   return h('div', { className: ROOT },
-    h('div', { className: 'hfa-card' },
+    h('div', { className: `hfa-card${fault ? ' faulted' : ''}` },
       h('div', { className: 'hfa-head' },
         h('h2', { className: 'hfa-title' }, 'HF Amplifier'),
         h('div', { className: 'hfa-head-end' },
@@ -296,24 +539,32 @@ function Panel({ api }) {
             type: 'button', className: 'hfa-icon', ref: gearRef, 'aria-label': 'Settings', title: 'Settings',
             onClick: () => setView('settings'),
           }, h(Gear)))),
+      fault ? h('div', { className: 'hfa-fault', role: 'alert' },
+        h(Warn),
+        h('div', { className: 'hfa-fault-text' },
+          h('strong', null, `Fault: ${faultText}`),
+          h('span', null, amp.flag4 === 3
+            ? `${tx ? 'Stop transmitting, then c' : 'C'}heck the antenna and SWR, then press Reset.`
+            : `${tx ? 'Stop transmitting, then c' : 'C'}heck the amplifier, then press Reset.`)),
+        h('button', { type: 'button', disabled: !connected, onClick: () => cmd({ action: 'reset' }) }, 'Reset')) : null,
       c.error && !connected ? h('p', { className: 'hfa-msg err' }, c.error) : null,
       unconfigured
         ? h('p', { className: 'hfa-empty' }, 'No amplifier address yet. Open settings (the gear) to connect.')
         : null,
       h('div', { className: 'hfa-meters' },
-        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', max: limits.forwardW, digits: 0, live, zone: zoneOf(meters?.forwardW, ZONES.Output), peak: pk('Output') }),
-        h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', max: limits.reflectedW, digits: 0, live, zone: swrZone || 'ok', peak: pk('Reflected') }),
-        h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', max: limits.inputW, digits: 0, live, zone: zoneOf(meters?.inputW, ZONES.Input), peak: pk('Input') }),
-        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', max: limits.currentA, digits: 1, live, zone: zoneOf(meters?.currentA, ZONES.Current), peak: pk('Current') }),
-        h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: 1, max: 3, digits: 2, live, zone: swrZone, peak: pk('SWR') }),
-        h(Meter, { label: 'Efficiency', value: live ? meters.efficiencyPercent : null, unit: '%', max: 100, digits: 0, live }),
-        h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: 40, max: 60, digits: 1, live: idleLive, zone: zoneOf(amp?.volts, ZONES.Supply) }),
-        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', max: 100, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, ZONES.Temp) })),
+        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', min: M.Output.min, max: M.Output.max, digits: 0, live, zone: zoneOf(meters?.forwardW, M.Output), peak: pk('Output') }),
+        h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', min: M.Reflected.min, max: M.Reflected.max, digits: 0, live, zone: swrZone || 'ok', peak: pk('Reflected') }),
+        h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', min: M.Input.min, max: M.Input.max, digits: 0, live, zone: zoneOf(meters?.inputW, M.Input), peak: pk('Input') }),
+        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', min: M.Current.min, max: M.Current.max, digits: 1, live, zone: zoneOf(meters?.currentA, M.Current), peak: pk('Current') }),
+        h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: M.SWR.min, max: M.SWR.max, digits: 2, live, zone: swrZone, peak: pk('SWR') }),
+        h(Meter, { label: 'Efficiency', value: live ? meters.efficiencyPercent : null, unit: '%', min: M.Efficiency.min, max: M.Efficiency.max, digits: 0, live }),
+        h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: M.Supply.min, max: M.Supply.max, digits: 1, live: idleLive, zone: zoneOf(amp?.volts, M.Supply) }),
+        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', min: M.Temp.min, max: M.Temp.max, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, M.Temp) })),
       h('div', { className: 'hfa-readouts' },
         h(Read, { k: 'Band', v: amp ? amp.bandName : '—' }),
-        h(Read, { k: 'Output', big: true, zone: live ? zoneOf(meters.forwardW, ZONES.Output) : null,
+        h(Read, { k: 'Output', big: true, zone: live ? zoneOf(meters.forwardW, M.Output) : null,
           v: idleLive ? `${fmt(live ? meters.forwardW : 0, 0)} W` : '—' }),
-        h(Read, { k: 'Antenna', v: amp ? String(amp.antenna) : '—' })),
+        h(Read, { k: 'Antenna', v: amp && amp.antenna > 0 ? String(amp.antenna) : '—' })),
       msg.text || controls.message || controls.bandSelect
         ? h('div', { className: 'hfa-msg' + (msg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' },
           msg.text || controls.bandSelect || controls.message)
@@ -322,7 +573,7 @@ function Panel({ api }) {
 
     h(Section, {
       id: 'controls', title: 'Controls', open: isOpen('controls', true), onToggle: flip('controls', true),
-      summary: amp ? [amp.bandName, `Ant ${amp.antenna}`, amp.highVoltage ? 'High' : 'Low',
+      summary: amp ? [fault ? `FAULT ${faultText}` : '', amp.bandName, `Ant ${amp.antenna}`, amp.highVoltage ? 'High' : 'Low',
         follow.enabled ? 'Following' : '', controls.fansForced ? 'Fans 100%' : '', amp.bypass ? 'BYPASS' : '']
         .filter(Boolean).join(' · ') : '',
     },
@@ -359,15 +610,25 @@ function toAmplifierMeter(status) {
   return {
     enabled: !!c.host,                                  // an amplifier address is configured
     connected,                                          // control link is up
-    operating: connected && !!status.amp && !status.amp.bypass,   // not bypassed (LDMOS supply on)
+    operating: connected && !!status.amp && !status.amp.bypass && !status.amp.fault,   // supply on and not faulted
     outputWatts: status.meters?.fresh ? status.meters.forwardW : 0,
-    maxWatts: status.limits?.forwardW ?? 1300,
+    maxWatts: prefsStore.value.meters.Output.max,
     sampledAt: Number.isFinite(sampled) ? sampled : 0,  // old/zero while telemetry is stale
   };
 }
 
 export default function register(api) {
   ensureStyles();
+  // Browsers allow sound only after a user gesture; the first click or key press anywhere arms the chime.
+  const arm = () => {
+    unlockAudio();
+    if (audioState() === 'ready') {
+      document.removeEventListener('pointerdown', arm, true);
+      document.removeEventListener('keydown', arm, true);
+    }
+  };
+  document.addEventListener('pointerdown', arm, true);
+  document.addEventListener('keydown', arm, true);
   api.registerPanel({
     id: 'hf-amp',
     component: () => h(Panel, { api }),
@@ -381,7 +642,10 @@ export default function register(api) {
         try {
           const response = await api.callBackend('GET', '/status', undefined, { signal });
           if (!response.ok) return null;
-          return toAmplifierMeter(await response.json());
+          loadPrefs(api);
+          const status = await response.json();
+          feedFaults(status, prefsStore.value.chime);    // chime even when the panel is not open
+          return toAmplifierMeter(status);
         } catch {
           return null;
         }

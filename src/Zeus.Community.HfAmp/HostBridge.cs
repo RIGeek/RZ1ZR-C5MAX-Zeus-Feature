@@ -5,7 +5,7 @@ using Zeus.Plugins.Contracts;
 namespace Zeus.Community.HfAmp;
 
 /// <summary>Settings that survive a restart of Zeus.</summary>
-internal sealed record AmpSettings(string? Host, bool FollowBand);
+internal sealed record AmpSettings(string? Host, bool FollowBand, string? UiPrefs = null);
 
 internal interface ISettingsStore
 {
@@ -32,6 +32,7 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
 {
     private const string HostKey = "host";
     private const string FollowKey = "followBand";
+    private const string PrefsKey = "uiPrefs";
 
     public async ValueTask<AmpSettings> LoadAsync(CancellationToken ct)
     {
@@ -39,7 +40,9 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
         {
             var host = await settings.GetAsync<string>(HostKey, ct).ConfigureAwait(false);
             var follow = await settings.GetAsync<bool?>(FollowKey, ct).ConfigureAwait(false);
-            return new AmpSettings(string.IsNullOrWhiteSpace(host) ? null : host, follow ?? false);
+            var prefs = await settings.GetAsync<string>(PrefsKey, ct).ConfigureAwait(false);
+            return new AmpSettings(string.IsNullOrWhiteSpace(host) ? null : host, follow ?? false,
+                string.IsNullOrWhiteSpace(prefs) ? null : prefs);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -51,6 +54,7 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
     {
         await settings.SetAsync(HostKey, s.Host ?? string.Empty, ct).ConfigureAwait(false);
         await settings.SetAsync(FollowKey, s.FollowBand, ct).ConfigureAwait(false);
+        await settings.SetAsync(PrefsKey, s.UiPrefs ?? string.Empty, ct).ConfigureAwait(false);
     }
 }
 
