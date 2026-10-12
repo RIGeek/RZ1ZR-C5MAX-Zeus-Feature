@@ -438,7 +438,7 @@ internal sealed class AmpClient : IAsyncDisposable
     }
 
     public async Task<CommandResult> ResetAsync() =>
-        Precheck(false, "Reset") ?? await SendAsync(AmpProtocol.Reset, "Reset sent").ConfigureAwait(false);
+        Precheck(true, "Reset") ?? await SendAsync(AmpProtocol.Reset, "Reset sent").ConfigureAwait(false);
 
     public async Task<CommandResult> SetAntennaAsync(int antenna)
     {

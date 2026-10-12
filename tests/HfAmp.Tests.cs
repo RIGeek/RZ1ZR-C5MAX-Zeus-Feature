@@ -237,8 +237,12 @@ Test("interlocks: transmit blocks relays and supply, allows safety actions", asy
     Check((await c.SetBypassAsync(false)) is { Ok: false, Status: 409 }, "restoring LDMOS supply blocked");
 
     Check((await c.SetBypassAsync(true)).Ok, "cutting the supply is always allowed");
-    Check((await c.ResetAsync()).Ok, "reset allowed");
+    Check((await c.ResetAsync()) is { Ok: false, Status: 409 }, "reset blocked while transmitting (the controller refuses it)");
     Check((await c.SetFansAsync(true)).Ok, "fans allowed");
+    Check(amp.Count("23") == 0, "the blocked reset never reached the amp");
+    amp.SetTx(false);
+    Check(await Until(() => c.GetSnapshot().Status is { Tx: false }), "tx ended");
+    Check((await c.ResetAsync()).Ok, "reset allowed once the amp is receiving");
     await Task.Delay(100);
     Check(amp.Count("32") == 0 && amp.Count("72") == 0 && amp.Count("42") == 0 && amp.Count("22") == 0,
         "blocked commands never reached the amp");

@@ -192,23 +192,30 @@ function feedFaults(status, chime) {
 const ZONE_WORD = { warn: 'Caution', bad: 'Danger' };
 const pctOf = (v, min, max) => (v == null ? 0 : Math.max(0, Math.min(100, ((v - min) / (max - min)) * 100)));
 
-// One meter row: label + value on top, tick-marked bar below, optional held-peak marker.
-function Meter({ label, value, unit, min = 0, max, digits, live, zone, peak }) {
+// One meter row: label + value on top, an LED-style bar below, optional held-peak marker.
+// With `zones` the whole scale shows its green/yellow/red bands (dim) and the lit part is coloured by where it
+// reaches, like the host's own meters. Without them the bar is one colour (zone class, grey when stale, else accent).
+function Meter({ label, value, unit, min = 0, max, digits, live, zone, zones, peak }) {
   const pct = pctOf(value, min, max);
   const z = live ? zone : null;
   const peakPct = peak == null ? null : pctOf(peak, min, max);
   const word = ZONE_WORD[z];
+  const banded = !!zones && live;
+  const style = banded ? { '--wp': `${pctOf(zones.warn, min, max)}%`, '--bp': `${pctOf(zones.bad, min, max)}%` } : undefined;
+  const badPct = banded ? pctOf(zones.bad, min, max) : null;
   return h('div', { className: 'hfa-meter' },
     h('div', { className: 'hfa-meter-head' },
       h('span', { className: 'hfa-label' }, label),
       word ? h('span', { className: `hfa-zone ${z}` }, word) : null,
       h('span', { className: 'val' }, fmt(value, digits), h('span', { className: 'unit' }, unit))),
     h('div', {
-      className: `hfa-bar${live ? '' : ' stale'}${z ? ` z-${z}` : ''}`, role: 'meter', 'aria-label': label,
+      className: `hfa-bar${live ? '' : ' stale'}${banded ? ' banded' : z ? ` z-${z}` : ''}`, style, role: 'meter', 'aria-label': label,
       'aria-valuemin': min, 'aria-valuemax': max, 'aria-valuenow': value == null ? min : Number(value.toFixed(2)),
       'aria-valuetext': value == null ? 'no reading' : `${fmt(value, digits)} ${unit}${word ? `, ${word.toLowerCase()}` : ''}`,
     },
-      h('i', { style: { width: `${pct}%` } }),
+      h('i', { style: { clipPath: `inset(0 ${100 - pct}% 0 0)` } }),
+      badPct != null && badPct > 0 && badPct < 100 ? h('em', { className: 'hfa-notch', style: { left: `${badPct}%` } }) : null,
+      pct > 0 ? h('s', { className: 'hfa-tip', style: { left: `${pct}%` } }) : null,
       peakPct != null && peakPct > pct + 0.5
         ? h('b', { className: 'hfa-peak', style: { left: `${peakPct}%` }, title: `Peak ${fmt(peak, digits)} ${unit}` })
         : null));
@@ -550,20 +557,20 @@ function Panel({ api }) {
         h('div', { className: 'hfa-fault-text' },
           h('strong', null, `Fault: ${faultText}`),
           h('span', null, `${tx ? 'Stop transmitting, then c' : 'C'}heck ${FAULT_HINTS[amp.flag4] || 'the amplifier'}, then press Reset.`)),
-        h('button', { type: 'button', disabled: !connected, onClick: () => cmd({ action: 'reset' }) }, 'Reset')) : null,
+        h('button', { type: 'button', disabled: !connected || lockTx, title: lockTx ? 'Reset is not accepted while transmitting' : undefined, onClick: () => cmd({ action: 'reset' }) }, 'Reset')) : null,
       c.error && !connected ? h('p', { className: 'hfa-msg err' }, c.error) : null,
       unconfigured
         ? h('p', { className: 'hfa-empty' }, 'No amplifier address yet. Open settings (the gear) to connect.')
         : null,
       h('div', { className: 'hfa-meters' },
-        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', min: M.Output.min, max: M.Output.max, digits: 0, live, zone: zoneOf(meters?.forwardW, M.Output), peak: pk('Output') }),
+        h(Meter, { label: 'Output', value: live ? meters.forwardW : null, unit: 'W', min: M.Output.min, max: M.Output.max, zones: M.Output, digits: 0, live, zone: zoneOf(meters?.forwardW, M.Output), peak: pk('Output') }),
         h(Meter, { label: 'Reflected', value: live ? meters.reflectedW : null, unit: 'W', min: M.Reflected.min, max: M.Reflected.max, digits: 0, live, zone: swrZone || 'ok', peak: pk('Reflected') }),
-        h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', min: M.Input.min, max: M.Input.max, digits: 0, live, zone: zoneOf(meters?.inputW, M.Input), peak: pk('Input') }),
-        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', min: M.Current.min, max: M.Current.max, digits: 1, live, zone: zoneOf(meters?.currentA, M.Current), peak: pk('Current') }),
-        h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: M.SWR.min, max: M.SWR.max, digits: 2, live, zone: swrZone, peak: pk('SWR') }),
+        h(Meter, { label: 'Input', value: live ? meters.inputW : null, unit: 'W', min: M.Input.min, max: M.Input.max, zones: M.Input, digits: 0, live, zone: zoneOf(meters?.inputW, M.Input), peak: pk('Input') }),
+        h(Meter, { label: 'Current', value: live ? meters.currentA : null, unit: 'A', min: M.Current.min, max: M.Current.max, zones: M.Current, digits: 1, live, zone: zoneOf(meters?.currentA, M.Current), peak: pk('Current') }),
+        h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: M.SWR.min, max: M.SWR.max, zones: M.SWR, digits: 2, live, zone: swrZone, peak: pk('SWR') }),
         h(Meter, { label: 'Efficiency', value: live ? meters.efficiencyPercent : null, unit: '%', min: M.Efficiency.min, max: M.Efficiency.max, digits: 0, live }),
-        h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: M.Supply.min, max: M.Supply.max, digits: 1, live: idleLive, zone: zoneOf(amp?.volts, M.Supply) }),
-        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', min: M.Temp.min, max: M.Temp.max, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, M.Temp) })),
+        h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: M.Supply.min, max: M.Supply.max, zones: M.Supply, digits: 1, live: idleLive, zone: zoneOf(amp?.volts, M.Supply) }),
+        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', min: M.Temp.min, max: M.Temp.max, zones: M.Temp, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, M.Temp) })),
       h('div', { className: 'hfa-readouts' },
         h(Read, { k: 'Band', v: amp ? amp.bandName : '—' }),
         h(Read, { k: 'Output', big: true, zone: live ? zoneOf(meters.forwardW, M.Output) : null,
@@ -602,8 +609,8 @@ function Panel({ api }) {
         h('div', { className: 'hfa-row' },
           toggle('Fans 100%', !!controls.fansForced, 'fans', 'force', 'auto'),
           toggle('Bypass', !!amp?.bypass, 'bypass', 'on', 'off', { warn: true, disabled: false }),
-          h('button', { type: 'button', disabled: !connected, onClick: () => cmd({ action: 'reset' }) }, 'Reset')),
-        h('p', { className: 'hfa-note' }, 'Bypass cuts the LDMOS supply. Changes are locked while transmitting.'))));
+          h('button', { type: 'button', disabled: !connected || lockTx, title: lockTx ? 'Reset is not accepted while transmitting' : undefined, onClick: () => cmd({ action: 'reset' }) }, 'Reset')),
+        h('p', { className: 'hfa-note' }, 'Bypass cuts the LDMOS supply. Most changes, including Reset, are locked while transmitting.'))));
 }
 
 // Maps /status onto the host's standard amplifier meter (the meters pane).
