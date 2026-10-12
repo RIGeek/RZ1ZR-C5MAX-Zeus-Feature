@@ -220,6 +220,12 @@ function Read({ k, v, zone, big }) {
     h('span', { className: 'v' }, v));
 }
 
+// What to look at for each fault code (code 3 is the high-SWR fault; names come from the backend).
+const FAULT_HINTS = {
+  1: 'the drive level from the radio', 2: 'the drive level and output power', 3: 'the antenna and SWR',
+  4: 'the low-pass filter', 5: 'the drain current and drive level', 6: 'the supply voltage', 7: 'the cooling and heatsink',
+};
+
 function Warn() {
   return h('svg', {
     width: 20, height: 20, viewBox: '0 0 24 24', fill: 'none', stroke: 'currentColor', strokeWidth: 2.2,
@@ -543,9 +549,7 @@ function Panel({ api }) {
         h(Warn),
         h('div', { className: 'hfa-fault-text' },
           h('strong', null, `Fault: ${faultText}`),
-          h('span', null, amp.flag4 === 3
-            ? `${tx ? 'Stop transmitting, then c' : 'C'}heck the antenna and SWR, then press Reset.`
-            : `${tx ? 'Stop transmitting, then c' : 'C'}heck the amplifier, then press Reset.`)),
+          h('span', null, `${tx ? 'Stop transmitting, then c' : 'C'}heck ${FAULT_HINTS[amp.flag4] || 'the amplifier'}, then press Reset.`)),
         h('button', { type: 'button', disabled: !connected, onClick: () => cmd({ action: 'reset' }) }, 'Reset')) : null,
       c.error && !connected ? h('p', { className: 'hfa-msg err' }, c.error) : null,
       unconfigured

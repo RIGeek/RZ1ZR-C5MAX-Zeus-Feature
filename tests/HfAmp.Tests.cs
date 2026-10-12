@@ -129,6 +129,15 @@ Test("calibration: idle shows no SWR or efficiency", () =>
     return Task.CompletedTask;
 });
 
+Test("fault codes have names", () =>
+{
+    Check(AmpProtocol.FaultText(0) is null, "0 is healthy");
+    string[] names = ["High input power", "High output power", "High SWR", "LPF fault", "Current fault", "Voltage fault", "Temperature fault"];
+    for (var i = 0; i < names.Length; i++) Check(AmpProtocol.FaultText(i + 1) == names[i], $"code {i + 1} is {names[i]}");
+    Check(AmpProtocol.FaultText(42) == "Fault code 42", "unknown codes still reported");
+    return Task.CompletedTask;
+});
+
 Test("band plan", () =>
 {
     (long Hz, int? Band)[] cases =

@@ -49,11 +49,17 @@ internal static class AmpProtocol
         return "7" + n.ToString(CultureInfo.InvariantCulture);
     }
 
-    /// <summary>Status field 5 is the fault code: 0 is healthy. Only 3 (high SWR) has been observed.</summary>
+    /// <summary>Status field 5 is the fault code (0 = healthy); names confirmed by the controller's maker.</summary>
     public static string? FaultText(int code) => code switch
     {
         0 => null,
+        1 => "High input power",
+        2 => "High output power",
         3 => "High SWR",
+        4 => "LPF fault",
+        5 => "Current fault",
+        6 => "Voltage fault",
+        7 => "Temperature fault",
         _ => $"Fault code {code}",
     };
 

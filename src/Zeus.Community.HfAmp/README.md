@@ -19,7 +19,7 @@ TCP 5005: two-ASCII-digit commands (`11` hello, `31`–`34` antenna, `71`–`78`
 UDP 5010: send `11`; while transmitting the amp streams `fwd,refl,cur,inp` raw counts (~20 Hz).
 Calibration (power = counts²/475.3, current = counts × 0.2051) was fitted to side-by-side readings of the
 amplifier's own front panel (forward 42–388 W, reflected 1–29 W, current 0.9–20.5 A) and is good to about 3 %. Input
-power has not been compared. The panel current is about 1.5× what the vendor application shows. Field 5 of the status push is the fault code: 0 when healthy, 3 in a captured high-SWR fault (the only code seen; others are shown as "Fault code N").
+power has not been compared. The panel current is about 1.5× what the vendor application shows. Field 5 of the status push is the fault code, shown in the panel by name (unrecognised codes appear as "Fault code N").
 
 ## Meter colour zones
 
@@ -59,8 +59,6 @@ A fault that is already present when Zeus connects is shown but not announced. R
     cd src/Zeus.Community.HfAmp && pwsh ./build-package.ps1   # script lives beside the .csproj, as in the template
 
 License: GPL-2.0-or-later.
-
-<img width="420" height="800" alt="image" src="https://github.com/user-attachments/assets/72b731e2-7034-4c12-9b6a-7d633fe86eeb" />
 
 ## Screenshots
 
