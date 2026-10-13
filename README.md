@@ -6,9 +6,10 @@ Control and metering for a network-connected HF LDMOS amplifier with a RZ1ZR con
 * **Efficiency %** (estimate: output power ÷ (supply V × current))
 * **Band following**: the amp is moved to the band the radio is tuned to (edge-triggered,
   so a manual band choice sticks until the radio changes band; never switches while transmitting)
-* Band, antenna, supply low/high, cooling, bypass and reset controls (all locked while transmitting)
-* Settings for the controller power class (600 / 1200 / 2400 / 4800 W, scales the power and current readings),
-  the nominal high supply voltage (48.0 / 50.0 / 53.5 / 58.3 V, used to tell High from Low) and °C or °F
+* Band, antenna, supply voltage (42 / 48 / 50 / 53.5 / 58.3 V), cooling, bypass and reset controls
+  (all locked while transmitting)
+* Settings for the controller power class (600 / 1200 / 2400 / 4800 W, scales the power and current readings)
+  and °C or °F
 * Hands the amp back to its front panel (command `99`) when Zeus shuts down
 
 The plugin only *reads* the radio (`ReadRadioState`); it never retunes or keys it.
@@ -16,7 +17,7 @@ The plugin only *reads* the radio (`ReadRadioState`); it never retunes or keys i
 ## Protocol (decoded from packet captures, not vendor documentation)
 
 TCP 5005: two-ASCII-digit commands (`11` hello, `31`–`34` antenna, `71`–`78` band,
-`41`/`42` supply, `45`/`46` fans, `21`/`22` bypass, `23` reset, `99` release); the amp pushes
+`41`/`42` supply low/high, `51`-`54` supply 48 / 50 / 53.5 / 58.25 V, `45`/`46` fans, `21`/`22` bypass, `23` reset, `99` release); the amp pushes
 `temp,volts*10,band,antenna,flag,tx,fanHigh,bypass` on every change.
 UDP 5010: send `11`; while transmitting the amp streams `fwd,refl,cur,inp` raw counts (~20 Hz).
 Calibration (power = counts²/475.3, current = counts × 0.2051) was fitted to side-by-side readings of the

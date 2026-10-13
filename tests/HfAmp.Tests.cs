@@ -157,14 +157,40 @@ Test("calibration: power class scales power and current, not input", () =>
     return Task.CompletedTask;
 });
 
-Test("supply: high/low threshold follows the nominal high setting", () =>
+Test("supply: firmware presets and their commands", () =>
 {
-    Check(Calibration.HighSupplyThreshold(48.0) == 45.0, "48 V -> 45 V threshold (as before)");
-    var st = new StatusStream().Feed("30,470,5,1,0,0,0,0"u8)[0];
-    Check(st.IsHighSupply(48.0), "47.0 V is high on a 48 V setting");
-    Check(!st.IsHighSupply(58.3), "47.0 V is not high on a 58.3 V setting");
-    Check(Calibration.IsHighSupplyChoice(53.5) && !Calibration.IsHighSupplyChoice(56), "only the Helios choices");
+    (double V, string Cmd)[] want = [(42, "41"), (48, "51"), (50, "52"), (53.5, "53"), (58.25, "54")];
+    foreach (var (v, cmd) in want) Check(AmpProtocol.SupplyCommand(v) == cmd, $"{v} V -> {cmd}");
+    Check(AmpProtocol.SupplyCommand(58.3) == "54", "58.3 V label means the 58.25 V preset");
+    Check(AmpProtocol.SupplyCommand(56) is null && AmpProtocol.SupplyCommand(45) is null, "no other voltages");
+    Check(AmpProtocol.NearestSupplyPreset(47.6) == 48 && AmpProtocol.NearestSupplyPreset(41.9) == 42
+          && AmpProtocol.NearestSupplyPreset(58.0) == 58.25 && AmpProtocol.NearestSupplyPreset(49.1) == 50, "idle voltage -> preset");
+    Check(AmpProtocol.NearestSupplyPreset(45.5) is null && AmpProtocol.NearestSupplyPreset(0) is null, "between presets or off: unknown");
     return Task.CompletedTask;
+});
+
+Test("supply: every preset sends its command, is tracked, and is locked during TX", async () =>
+{
+    await using var amp = new MockAmp();
+    await using var c = await Connected(amp);
+    Check(await Until(() => c.GetSnapshot().SupplyPreset == 42), "idle 41.9 V recognised as the 42 V preset");
+    foreach (var (v, cmd) in new[] { (53.5, "53"), (48.0, "51"), (58.25, "54"), (50.0, "52"), (42.0, "41") })
+    {
+        Check((await c.SetSupplyAsync(v)).Ok, $"{v} V accepted");
+        Check(await Until(() => amp.Count(cmd) == 1), $"{cmd} sent once");
+        Check(await Until(() => c.GetSnapshot().SupplyPreset == v), $"preset now {v}");
+    }
+    Check((await c.SetVoltageAsync(true)).Ok, "42 returns to the stored high preset");
+    Check(await Until(() => c.GetSnapshot().SupplyPreset == 50), "stored preset (50 V) recognised from the measured voltage");
+    Check((await c.SetSupplyAsync(56)) is { Ok: false, Status: 400 }, "unknown voltage refused");
+
+    amp.SetTx(true);
+    Check(await Until(() => c.GetSnapshot().Status is { Tx: true }), "tx seen");
+    amp.Volts10 = 465; amp.Push();                 // supply sags under load
+    await Task.Delay(100);
+    Check(c.GetSnapshot().SupplyPreset == 50, "sag during TX does not change the preset");
+    Check((await c.SetSupplyAsync(58.25)) is { Ok: false, Status: 409 }, "locked while transmitting");
+    Check(amp.Count("54") == 1, "blocked change never reached the amp");
 });
 
 Test("fault codes have names", () =>
@@ -605,21 +631,21 @@ Test("service: settings persist through the store and host validation", async ()
     await svc.DisposeAsync();
 });
 
-Test("service: power class and high supply are validated, saved and applied", async () =>
+Test("service: power class is validated, saved and applied", async () =>
 {
     var store = new MemorySettingsStore();
     await using var amp = new MockAmp();
     var svc = new HfAmpService(NullLogger.Instance, store, new FakeRadio(), Fast(amp));
     await svc.StartAsync(CancellationToken.None);
     var cur = svc.GetSettings();
-    Check(cur is { PowerClass: 1200, HighSupplyVolts: 48.0 }, "defaults are the 1200 W controller at 48 V");
-    Check((await svc.ApplySettingsAsync(cur with { PowerClass = 2400, HighSupplyVolts = 53.5 }, CancellationToken.None)).Ok, "saved");
-    Check((await store.LoadAsync(CancellationToken.None)) is { PowerClass: 2400, HighSupplyVolts: 53.5 }, "store updated");
+    Check(cur is { PowerClass: 1200 }, "default is the 1200 W controller");
+    Check((await svc.ApplySettingsAsync(cur with { PowerClass = 2400 }, CancellationToken.None)).Ok, "saved");
+    Check((await store.LoadAsync(CancellationToken.None)) is { PowerClass: 2400 }, "store updated");
     Check(svc.Amp.PowerClass == 2400, "client uses the new class");
     var status = svc.BuildStatus();
-    Check(status.Controls is { PowerClass: 2400, HighSupplyVolts: 53.5 } && status.Limits.ForwardW == 2600, "status reports it");
+    Check(status.Controls is { PowerClass: 2400 } && status.Limits.ForwardW == 2600, "status reports it");
+    Check(status.Controls.SupplyPresets.SequenceEqual([42.0, 48.0, 50.0, 53.5, 58.25]), "supply presets listed");
     Check((await svc.ApplySettingsAsync(cur with { PowerClass = 1500 }, CancellationToken.None)) is { Ok: false, Status: 400 }, "bad class refused");
-    Check((await svc.ApplySettingsAsync(cur with { HighSupplyVolts = 56 }, CancellationToken.None)) is { Ok: false, Status: 400 }, "bad supply refused");
     Check(svc.GetSettings().PowerClass == 2400, "refused change left settings alone");
     await svc.DisposeAsync();
 });
@@ -686,6 +712,7 @@ sealed class MockAmp : IAsyncDisposable
     private int _udpHellos;
 
     public int Temp = 28, Volts10 = 419, Band = 6, Ant = 1, Flag4, Tx, Fan, Bypass;
+    public int HighPreset10 = 480;   // like the controller's EEPROM preset
     public int IgnoreBandCommands;                 // swallow this many band commands (the firmware bug)
     public int[] Counts = [454, 97, 111, 30];      // the reference screenshot's operating point
 
@@ -765,7 +792,11 @@ sealed class MockAmp : IAsyncDisposable
                 if (IgnoreBandCommands > 0) { IgnoreBandCommands--; return; }
                 Band = c[1] - '0'; break;
             case "41": Volts10 = 420; break;
-            case "42": Volts10 = 480; break;
+            case "42": Volts10 = HighPreset10; break;
+            case "51": Volts10 = HighPreset10 = 480; break;
+            case "52": Volts10 = HighPreset10 = 500; break;
+            case "53": Volts10 = HighPreset10 = 535; break;
+            case "54": Volts10 = HighPreset10 = 582; break;
             case "45": Fan = 1; break;
             case "46": Fan = 0; break;
             case "21": Bypass = 1; Volts10 = 0; break;

@@ -7,8 +7,7 @@ namespace Zeus.Community.HfAmp;
 /// <summary>Settings that survive a restart of Zeus.</summary>
 internal sealed record AmpSettings(
     string? Host, bool FollowBand, string? UiPrefs = null,
-    int PowerClass = Calibration.DefaultPowerClass,
-    double HighSupplyVolts = Calibration.DefaultHighSupplyVolts);
+    int PowerClass = Calibration.DefaultPowerClass);
 
 internal interface ISettingsStore
 {
@@ -37,7 +36,6 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
     private const string FollowKey = "followBand";
     private const string PrefsKey = "uiPrefs";
     private const string PowerClassKey = "powerClass";
-    private const string HighSupplyKey = "highSupplyVolts";
 
     public async ValueTask<AmpSettings> LoadAsync(CancellationToken ct)
     {
@@ -47,11 +45,9 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
             var follow = await settings.GetAsync<bool?>(FollowKey, ct).ConfigureAwait(false);
             var prefs = await settings.GetAsync<string>(PrefsKey, ct).ConfigureAwait(false);
             var power = await settings.GetAsync<int?>(PowerClassKey, ct).ConfigureAwait(false);
-            var high = await settings.GetAsync<double?>(HighSupplyKey, ct).ConfigureAwait(false);
             return new AmpSettings(string.IsNullOrWhiteSpace(host) ? null : host, follow ?? false,
                 string.IsNullOrWhiteSpace(prefs) ? null : prefs,
-                power is int p && Calibration.IsPowerClass(p) ? p : Calibration.DefaultPowerClass,
-                high is double v && Calibration.IsHighSupplyChoice(v) ? v : Calibration.DefaultHighSupplyVolts);
+                power is int p && Calibration.IsPowerClass(p) ? p : Calibration.DefaultPowerClass);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -65,7 +61,6 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
         await settings.SetAsync(FollowKey, s.FollowBand, ct).ConfigureAwait(false);
         await settings.SetAsync(PrefsKey, s.UiPrefs ?? string.Empty, ct).ConfigureAwait(false);
         await settings.SetAsync(PowerClassKey, s.PowerClass, ct).ConfigureAwait(false);
-        await settings.SetAsync(HighSupplyKey, s.HighSupplyVolts, ct).ConfigureAwait(false);
     }
 }
 

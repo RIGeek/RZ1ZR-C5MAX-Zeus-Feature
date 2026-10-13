@@ -50,6 +50,8 @@ const DEFAULT_PREFS = {
   chime: { on: true, volume: 0.5, repeat: false },
   meters: Object.fromEntries(METER_DEFS.map((m) => [m.key, { ...m.d }])),
 };
+// The firmware's top preset is 58.25 V; Helios DX and the R4875 front end call it 58.3.
+const supplyLabel = (v) => (v === 58.25 ? '58.3' : String(v));
 const isNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
 // Merge whatever was stored onto the defaults, dropping anything malformed.
@@ -496,13 +498,6 @@ function Panel({ api }) {
           }, controls.powerClasses.map((w) => h('option', { key: w, value: w }, `${w} W`))),
           h('p', { className: 'hfa-note' }, 'The controller version. It scales the output, reflected and current readings (input is not affected). Meter ranges below are separate; adjust them to suit.')),
         h('div', { className: 'hfa-group' },
-          h('label', { className: 'hfa-label', htmlFor: `${ROOT}-supply` }, 'High supply setting'),
-          h('select', {
-            id: `${ROOT}-supply`, value: controls.highSupplyVolts,
-            onChange: (e) => post('/settings', { highSupplyVolts: Number(e.target.value) }),
-          }, controls.highSupplyChoices.map((v) => h('option', { key: v, value: v }, `${fmt(v, 1)} V`))),
-          h('p', { className: 'hfa-note' }, 'The voltage your amplifier runs at on High. Used to tell High from Low; it does not change the amplifier.')),
-        h('div', { className: 'hfa-group' },
           h('label', { className: 'hfa-check' },
             h('input', { type: 'checkbox', checked: prefs.tempF, onChange: (e) => updatePrefs({ tempF: e.target.checked }) }),
             'Show temperature in °F'),
@@ -614,7 +609,7 @@ function Panel({ api }) {
 
     h(Section, {
       id: 'controls', title: 'Controls', open: isOpen('controls', true), onToggle: flip('controls', true),
-      summary: amp ? [fault ? `FAULT ${faultText}` : '', amp.bandName, `Ant ${amp.antenna}`, amp.highVoltage ? 'High' : 'Low',
+      summary: amp ? [fault ? `FAULT ${faultText}` : '', amp.bandName, `Ant ${amp.antenna}`, amp.supplyPreset ? `${supplyLabel(amp.supplyPreset)} V` : (amp.highVoltage ? 'High' : 'Low'),
         follow.enabled ? 'Following' : '', controls.fansForced ? 'Fans 100%' : '', amp.bypass ? 'BYPASS' : '']
         .filter(Boolean).join(' · ') : '',
     },
@@ -630,10 +625,12 @@ function Panel({ api }) {
       h('div', { className: 'hfa-group' },
         h('h2', { className: 'hfa-label' }, 'Supply'),
         h('div', { className: 'hfa-row', role: 'group', 'aria-label': 'Supply voltage' },
-          h('button', { type: 'button', 'aria-pressed': amp ? !amp.highVoltage : false, disabled: !connected || lockTx,
-            onClick: () => cmd({ action: 'voltage', mode: 'low' }) }, 'Low (42 V)'),
-          h('button', { type: 'button', 'aria-pressed': amp ? amp.highVoltage : false, disabled: !connected || lockTx,
-            onClick: () => cmd({ action: 'voltage', mode: 'high' }) }, `High (${fmt(controls.highSupplyVolts, 1)} V)`))),
+          controls.supplyPresets.map((v) => h('button', {
+            key: v, type: 'button', 'aria-pressed': amp?.supplyPreset === v, disabled: !connected || lockTx,
+            title: lockTx ? 'Locked while transmitting' : undefined,
+            onClick: () => cmd({ action: 'supply', volts: v }),
+          }, `${supplyLabel(v)} V`))),
+        h('p', { className: 'hfa-note' }, 'Sets the Huawei rectifier through the amplifier. 42 V is the low setting; the others become the stored high setting. The lit button is the one matching the measured voltage at idle.')),
       h('div', { className: 'hfa-group' },
         h('h2', { className: 'hfa-label' }, 'Cooling and protection'),
         h('div', { className: 'hfa-row' },

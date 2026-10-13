@@ -8,9 +8,9 @@ using Zeus.Community.HfAmp.Amp;
 
 namespace Zeus.Community.HfAmp;
 
-internal sealed record CommandRequest(string? Action, int? Band, int? Antenna, string? Mode);
+internal sealed record CommandRequest(string? Action, int? Band, int? Antenna, string? Mode, double? Volts);
 
-internal sealed record SettingsRequest(string? Host, bool? FollowBand, int? PowerClass, double? HighSupplyVolts);
+internal sealed record SettingsRequest(string? Host, bool? FollowBand, int? PowerClass);
 
 /// <summary>
 /// HTTP surface, mounted by Zeus under /api/plugins/&lt;id&gt;/. It can switch relays
@@ -31,7 +31,7 @@ internal static class HfAmpEndpoints
             With(ctx, service, s =>
             {
                 var c = s.GetSettings();
-                return Results.Json(new { host = c.Host, followBand = c.FollowBand, powerClass = c.PowerClass, highSupplyVolts = c.HighSupplyVolts });
+                return Results.Json(new { host = c.Host, followBand = c.FollowBand, powerClass = c.PowerClass });
             }));
 
         endpoints.MapGet("prefs", (HttpContext ctx) =>
@@ -65,7 +65,6 @@ internal static class HfAmpEndpoints
                     Host = body!.Host ?? current.Host,
                     FollowBand = body.FollowBand ?? current.FollowBand,
                     PowerClass = body.PowerClass ?? current.PowerClass,
-                    HighSupplyVolts = body.HighSupplyVolts ?? current.HighSupplyVolts,
                 },
                 ctx.RequestAborted);
             return Reply(ctx, result);
@@ -86,6 +85,7 @@ internal static class HfAmpEndpoints
                 "band" when body.Band is int band => s.Amp.StartBandSelect(band),
                 "antenna" when body.Antenna is int antenna => await s.Amp.SetAntennaAsync(antenna),
                 "voltage" when mode is "low" or "high" => await s.Amp.SetVoltageAsync(mode == "high"),
+                "supply" when body.Volts is double volts => await s.Amp.SetSupplyAsync(volts),
                 "fans" when mode is "auto" or "force" => await s.Amp.SetFansAsync(mode == "force"),
                 "bypass" when mode is "on" or "off" => await s.Amp.SetBypassAsync(mode == "on"),
                 _ => CommandResult.Invalid("Unknown or incomplete command"),

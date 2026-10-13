@@ -30,8 +30,36 @@ internal static class AmpProtocol
     public const string Hello = "11";
     public const string Release = "99";      // hand control back to the front panel
     public const string Reset = "23";
-    public const string VoltageLow = "41";
-    public const string VoltageHigh = "42";
+    public const string VoltageLow = "41";    // 42 V, live setting only
+    public const string VoltageHigh = "42";   // back to the stored high preset
+
+    /// <summary>
+    /// Supply presets, from the controller firmware. The controller sets the voltage of its Huawei
+    /// R48xx rectifier over CAN: 41 sends only the live setting (42 V); 51-54 store a high preset in
+    /// the controller's EEPROM, set the rectifier's live and power-on voltage, and switch to it.
+    /// The firmware encodes volts x 1024, so the top preset is 58.25 V (Helios DX labels it 58.3).
+    /// </summary>
+    public static readonly (double Volts, string Command)[] SupplyPresets =
+        [(42.0, "41"), (48.0, "51"), (50.0, "52"), (53.5, "53"), (58.25, "54")];
+
+    public const double LowSupplyVolts = 42.0;
+
+    public static string? SupplyCommand(double volts)
+    {
+        foreach (var (v, cmd) in SupplyPresets)
+            if (Math.Abs(v - volts) <= 0.1) return cmd;   // 58.3 (the Helios label) means 58.25
+        return null;
+    }
+
+    /// <summary>The preset a measured idle supply voltage corresponds to, if it is within 1 V of one.</summary>
+    public static double? NearestSupplyPreset(double measuredVolts)
+    {
+        double? best = null;
+        foreach (var (v, _) in SupplyPresets)
+            if (Math.Abs(v - measuredVolts) <= 1.0 && (best is null || Math.Abs(v - measuredVolts) < Math.Abs(best.Value - measuredVolts)))
+                best = v;
+        return best;
+    }
     public const string FansForced = "45";   // fans forced to 100 %
     public const string FansAuto = "46";
     public const string BypassOn = "21";     // cuts the LDMOS supply
@@ -72,12 +100,7 @@ internal readonly record struct AmpStatus(
     int TempC, double Volts, int Band, int Antenna, int Flag4,
     bool Tx, bool FanHigh, bool Bypass)
 {
-    /// <summary>
-    /// The amp does not report which supply setting is active, so it is inferred from the measured
-    /// voltage: above the midpoint between the low setting and the owner's nominal high setting.
-    /// </summary>
-    public bool IsHighSupply(double nominalHighVolts) =>
-        Volts >= Calibration.HighSupplyThreshold(nominalHighVolts);
+
 }
 
 /// <summary>
@@ -189,19 +212,6 @@ internal static class Calibration
     public const int DefaultPowerClass = 1200;
 
     public static bool IsPowerClass(int watts) => Array.IndexOf(PowerClasses, watts) >= 0;
-
-    /// <summary>The supply voltage of the "low" setting (command 41).</summary>
-    public const double LowSupplyVolts = 42.0;
-
-    /// <summary>Nominal "high" supply voltages offered by Helios DX 1.30 (default 48 V).</summary>
-    public static readonly double[] HighSupplyChoices = [48.0, 50.0, 53.5, 58.3];
-    public const double DefaultHighSupplyVolts = 48.0;
-
-    public static bool IsHighSupplyChoice(double volts) =>
-        HighSupplyChoices.Any(v => Math.Abs(v - volts) < 0.05);
-
-    /// <summary>Measured voltage at or above which the high supply setting is assumed (45 V for 48 V).</summary>
-    public static double HighSupplyThreshold(double nominalHighVolts) => (LowSupplyVolts + nominalHighVolts) / 2;
 
     public static Readings Compute(double forward, double reflected, double current, double input, double volts,
         int powerClass = DefaultPowerClass)

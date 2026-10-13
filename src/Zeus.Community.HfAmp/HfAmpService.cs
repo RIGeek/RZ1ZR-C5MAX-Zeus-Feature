@@ -14,7 +14,7 @@ internal sealed record ApiConnection(string State, string? Host, string? Error);
 
 internal sealed record ApiAmp(
     int TempC, double Volts, int Band, string BandName, int Antenna, int Flag4,
-    bool Fault, string? FaultText, bool Tx, bool FanHigh, bool Bypass, bool HighVoltage);
+    bool Fault, string? FaultText, bool Tx, bool FanHigh, bool Bypass, bool HighVoltage, double? SupplyPreset);
 
 internal sealed record ApiMeters(
     bool Fresh, double ForwardW, double ReflectedW, double InputW, double CurrentA,
@@ -22,7 +22,7 @@ internal sealed record ApiMeters(
 
 internal sealed record ApiControls(
     bool FansForced, string? BandSelect, string? Message, string[] Bands, int Antennas,
-    int PowerClass, int[] PowerClasses, double HighSupplyVolts, double[] HighSupplyChoices);
+    int PowerClass, int[] PowerClasses, double[] SupplyPresets);
 
 internal sealed record ApiFollow(bool Available, bool Enabled, long? RadioHz, int? RadioBand, string State);
 
@@ -76,14 +76,11 @@ internal sealed class HfAmpService : IAsyncDisposable
             return CommandResult.Invalid("Enter an IPv4 address or host name");
         if (!Calibration.IsPowerClass(next.PowerClass))
             return CommandResult.Invalid("Power class must be 600, 1200, 2400 or 4800 W");
-        if (!Calibration.IsHighSupplyChoice(next.HighSupplyVolts))
-            return CommandResult.Invalid("High supply must be 48.0, 50.0, 53.5 or 58.3 V");
 
         await _settingsLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var normalized = new AmpSettings(host, next.FollowBand, _settings.UiPrefs,
-                next.PowerClass, Calibration.HighSupplyChoices.First(v => Math.Abs(v - next.HighSupplyVolts) < 0.05));
+            var normalized = new AmpSettings(host, next.FollowBand, _settings.UiPrefs, next.PowerClass);
             var hostChanged = !string.Equals(_settings.Host, host, StringComparison.OrdinalIgnoreCase);
 
             // Changing the address hands the amp back to its front panel, so not in the middle of a transmission.
@@ -129,7 +126,8 @@ internal sealed class HfAmpService : IAsyncDisposable
         ApiAmp? amp = s.Status is { } st
             ? new ApiAmp(st.TempC, st.Volts, st.Band, AmpProtocol.BandName(st.Band), st.Antenna, st.Flag4,
                 st.Flag4 != 0, AmpProtocol.FaultText(st.Flag4), st.Tx, st.FanHigh, st.Bypass,
-                st.IsHighSupply(_settings.HighSupplyVolts))
+                s.SupplyPreset is { } p ? p > AmpProtocol.LowSupplyVolts : st.Volts >= 45.0,
+                s.SupplyPreset)
             : null;
 
         ApiMeters? meters = s.Meter is { } m
@@ -147,7 +145,7 @@ internal sealed class HfAmpService : IAsyncDisposable
             new ApiConnection(s.Link.ToString().ToLowerInvariant(), s.Host, s.Error),
             amp, meters,
             new ApiControls(s.FansForced, s.BandSelect, s.Message, AmpProtocol.BandNames, AmpProtocol.AntennaCount,
-                _settings.PowerClass, Calibration.PowerClasses, _settings.HighSupplyVolts, Calibration.HighSupplyChoices),
+                _settings.PowerClass, Calibration.PowerClasses, AmpProtocol.SupplyPresets.Select(p => p.Volts).ToArray()),
             follow,
             Limits(_settings.PowerClass),
             s.SampledUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture));

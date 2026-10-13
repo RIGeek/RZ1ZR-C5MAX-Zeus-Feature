@@ -23,7 +23,8 @@ internal sealed record MeterView(bool Fresh, Readings Readings, int[] Raw);
 internal sealed record AmpSnapshot(
     LinkState Link, string? Host, string? Error,
     AmpStatus? Status, MeterView? Meter,
-    bool FansForced, string? BandSelect, string? Message, DateTime? SampledUtc);
+    bool FansForced, string? BandSelect, string? Message, DateTime? SampledUtc,
+    double? SupplyPreset = null);
 
 internal sealed class AmpClientOptions
 {
@@ -74,6 +75,7 @@ internal sealed class AmpClient : IAsyncDisposable
     private DateTime _helloUtc = DateTime.MinValue;
     private bool _fansForced;
     private int _powerClass = Calibration.DefaultPowerClass;
+    private double? _supplyPreset;
 
     private CancellationTokenSource? _bandCts;
     private Task? _bandTask;
@@ -99,6 +101,7 @@ internal sealed class AmpClient : IAsyncDisposable
             _status = null;
             _meter = null;
             _fansForced = false;
+            _supplyPreset = null;
             _smoother.Reset();
             _link = host is null ? LinkState.Unconfigured : LinkState.Connecting;
         }
@@ -184,7 +187,8 @@ internal sealed class AmpClient : IAsyncDisposable
             DateTime? sampled = null;
             if (_link == LinkState.Connected && _status is { } st)
                 sampled = st.Tx ? (_meterUtc == DateTime.MinValue ? null : _meterUtc) : DateTime.UtcNow;
-            return new AmpSnapshot(_link, _host, _error, _status, meter, _fansForced, _bandSelect, message, sampled);
+            return new AmpSnapshot(_link, _host, _error, _status, meter, _fansForced, _bandSelect, message, sampled,
+                _supplyPreset);
         }
     }
 
@@ -315,6 +319,10 @@ internal sealed class AmpClient : IAsyncDisposable
         {
             txStarted = status.Tx && !(_status?.Tx ?? false);
             _status = status;
+            // The amp does not report its preset. At idle the measured voltage identifies it; under load
+            // the supply sags, so keep the last idle (or commanded) value while transmitting.
+            if (!status.Tx && !status.Bypass && AmpProtocol.NearestSupplyPreset(status.Volts) is { } preset)
+                _supplyPreset = preset;
             if (txStarted) _smoother.Reset();
         }
 
@@ -464,6 +472,19 @@ internal sealed class AmpClient : IAsyncDisposable
         Precheck(true, "Voltage change")
         ?? await SendAsync(high ? AmpProtocol.VoltageHigh : AmpProtocol.VoltageLow,
             high ? "Supply set to high" : "Supply set to low").ConfigureAwait(false);
+
+    /// <summary>Set the supply to one of the firmware presets (42, 48, 50, 53.5 or 58.25 V).</summary>
+    public async Task<CommandResult> SetSupplyAsync(double volts)
+    {
+        if (AmpProtocol.SupplyCommand(volts) is not { } command)
+            return CommandResult.Invalid("Supply must be 42, 48, 50, 53.5 or 58.25 V");
+        var blocked = Precheck(true, "Supply change");
+        if (blocked is not null) return blocked;
+
+        var result = await SendAsync(command, $"Supply set to {volts:0.##} V").ConfigureAwait(false);
+        if (result.Ok) lock (_gate) { _supplyPreset = volts; }
+        return result;
+    }
 
     public async Task<CommandResult> SetFansAsync(bool forced)
     {
