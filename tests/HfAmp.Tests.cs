@@ -129,6 +129,44 @@ Test("calibration: idle shows no SWR or efficiency", () =>
     return Task.CompletedTask;
 });
 
+Test("status: multi-digit fault codes are kept, not dropped", () =>
+{
+    var s = new StatusStream().Feed("35,480,5,2,12,0,0,035,480,5,2,0,0,0,0"u8);
+    Check(s.Count == 2 && s[0].Flag4 == 12 && s[1].Flag4 == 0 && s[1].TempC == 35, "fault 12 then healthy");
+    Check(AmpProtocol.FaultText(12) == "Fault code 12", "unknown code named");
+    return Task.CompletedTask;
+});
+
+Test("calibration: power class scales power and current, not input", () =>
+{
+    var a = Calibration.Compute(466, 97, 74, 65, 48);
+    foreach (var (cls, k) in new[] { (600, 0.5), (1200, 1.0), (2400, 2.0), (4800, 4.0) })
+    {
+        var r = Calibration.Compute(466, 97, 74, 65, 48, cls);
+        Check(Math.Abs(r.ForwardW - a.ForwardW * k) < 1e-9 && Math.Abs(r.ReflectedW - a.ReflectedW * k) < 1e-9, $"{cls} W power x{k}");
+        Check(Math.Abs(r.CurrentA - a.CurrentA * k) < 1e-9, $"{cls} W current x{k}");
+        Check(Math.Abs(r.InputW - a.InputW) < 1e-9, $"{cls} W input unchanged");
+        Check(r.Swr == a.Swr, $"{cls} W SWR unchanged");
+    }
+    // Helios DX divisors are 952/476/238/119 for the four versions; ours stays within 0.2 %.
+    foreach (var (cls, div) in new[] { (600, 952.0), (1200, 476.0), (2400, 238.0), (4800, 119.0) })
+    {
+        var w = Calibration.Compute(500, 0, 5, 0, 48, cls).ForwardW;
+        Check(Math.Abs(w / (500.0 * 500 / div) - 1) < 0.002, $"{cls} W tracks Helios divisor {div}");
+    }
+    return Task.CompletedTask;
+});
+
+Test("supply: high/low threshold follows the nominal high setting", () =>
+{
+    Check(Calibration.HighSupplyThreshold(48.0) == 45.0, "48 V -> 45 V threshold (as before)");
+    var st = new StatusStream().Feed("30,470,5,1,0,0,0,0"u8)[0];
+    Check(st.IsHighSupply(48.0), "47.0 V is high on a 48 V setting");
+    Check(!st.IsHighSupply(58.3), "47.0 V is not high on a 58.3 V setting");
+    Check(Calibration.IsHighSupplyChoice(53.5) && !Calibration.IsHighSupplyChoice(56), "only the Helios choices");
+    return Task.CompletedTask;
+});
+
 Test("fault codes have names", () =>
 {
     Check(AmpProtocol.FaultText(0) is null, "0 is healthy");
@@ -224,7 +262,7 @@ Test("band select: stops when the amp starts transmitting", async () =>
     Check(amp.Count("73") == sent, "no band commands while transmitting");
 });
 
-Test("interlocks: transmit blocks relays and supply, allows safety actions", async () =>
+Test("interlocks: transmit locks every control, as in Helios DX", async () =>
 {
     await using var amp = new MockAmp();
     await using var c = await Connected(amp);
@@ -234,19 +272,19 @@ Test("interlocks: transmit blocks relays and supply, allows safety actions", asy
     Check((await c.SetAntennaAsync(2)) is { Ok: false, Status: 409 }, "antenna blocked");
     Check(c.StartBandSelect(2) is { Ok: false, Status: 409 }, "band blocked");
     Check((await c.SetVoltageAsync(true)) is { Ok: false, Status: 409 }, "voltage blocked");
-    Check((await c.SetBypassAsync(false)) is { Ok: false, Status: 409 }, "restoring LDMOS supply blocked");
-
-    Check((await c.SetBypassAsync(true)).Ok, "cutting the supply is always allowed");
+    Check((await c.SetBypassAsync(false)) is { Ok: false, Status: 409 }, "bypass off blocked");
+    Check((await c.SetBypassAsync(true)) is { Ok: false, Status: 409 }, "bypass on blocked");
     Check((await c.ResetAsync()) is { Ok: false, Status: 409 }, "reset blocked while transmitting (the controller refuses it)");
-    Check((await c.SetFansAsync(true)).Ok, "fans allowed");
+    Check((await c.SetFansAsync(true)) is { Ok: false, Status: 409 }, "fans blocked");
+    Check(!c.GetSnapshot().FansForced, "a refused fan change is not remembered");
     Check(amp.Count("23") == 0, "the blocked reset never reached the amp");
     amp.SetTx(false);
     Check(await Until(() => c.GetSnapshot().Status is { Tx: false }), "tx ended");
     Check((await c.ResetAsync()).Ok, "reset allowed once the amp is receiving");
     await Task.Delay(100);
-    Check(amp.Count("32") == 0 && amp.Count("72") == 0 && amp.Count("42") == 0 && amp.Count("22") == 0,
-        "blocked commands never reached the amp");
-    Check(amp.Count("21") == 1 && amp.Count("23") == 1 && amp.Count("45") == 1, "allowed commands did");
+    Check(amp.Count("32") == 0 && amp.Count("72") == 0 && amp.Count("42") == 0 && amp.Count("22") == 0
+          && amp.Count("21") == 0 && amp.Count("45") == 0, "blocked commands never reached the amp");
+    Check(amp.Count("23") == 1, "reset sent once receiving");
 });
 
 Test("interlocks can be relaxed by option", async () =>
@@ -564,6 +602,43 @@ Test("service: settings persist through the store and host validation", async ()
     Check(svc.Follower.Enabled, "follow enabled");
     Check(HfAmpService.IsValidHost("amp.local") && HfAmpService.IsValidHost("10.10.10.77"), "valid hosts");
     Check(!HfAmpService.IsValidHost("a/b") && !HfAmpService.IsValidHost("a b") && !HfAmpService.IsValidHost("[::1]:80"), "invalid hosts");
+    await svc.DisposeAsync();
+});
+
+Test("service: power class and high supply are validated, saved and applied", async () =>
+{
+    var store = new MemorySettingsStore();
+    await using var amp = new MockAmp();
+    var svc = new HfAmpService(NullLogger.Instance, store, new FakeRadio(), Fast(amp));
+    await svc.StartAsync(CancellationToken.None);
+    var cur = svc.GetSettings();
+    Check(cur is { PowerClass: 1200, HighSupplyVolts: 48.0 }, "defaults are the 1200 W controller at 48 V");
+    Check((await svc.ApplySettingsAsync(cur with { PowerClass = 2400, HighSupplyVolts = 53.5 }, CancellationToken.None)).Ok, "saved");
+    Check((await store.LoadAsync(CancellationToken.None)) is { PowerClass: 2400, HighSupplyVolts: 53.5 }, "store updated");
+    Check(svc.Amp.PowerClass == 2400, "client uses the new class");
+    var status = svc.BuildStatus();
+    Check(status.Controls is { PowerClass: 2400, HighSupplyVolts: 53.5 } && status.Limits.ForwardW == 2600, "status reports it");
+    Check((await svc.ApplySettingsAsync(cur with { PowerClass = 1500 }, CancellationToken.None)) is { Ok: false, Status: 400 }, "bad class refused");
+    Check((await svc.ApplySettingsAsync(cur with { HighSupplyVolts = 56 }, CancellationToken.None)) is { Ok: false, Status: 400 }, "bad supply refused");
+    Check(svc.GetSettings().PowerClass == 2400, "refused change left settings alone");
+    await svc.DisposeAsync();
+});
+
+Test("service: the amplifier address cannot change while transmitting", async () =>
+{
+    var store = new MemorySettingsStore();
+    await using var amp = new MockAmp();
+    var svc = new HfAmpService(NullLogger.Instance, store, new FakeRadio(), Fast(amp));
+    await svc.StartAsync(CancellationToken.None);
+    await svc.ApplySettingsAsync(new AmpSettings("127.0.0.1", false), CancellationToken.None);
+    Check(await Until(() => svc.Amp.GetSnapshot().Status is not null), "connected");
+    amp.SetTx(true);
+    Check(await Until(() => svc.Amp.GetSnapshot().Status is { Tx: true }), "tx seen");
+    var r = await svc.ApplySettingsAsync(svc.GetSettings() with { Host = "10.0.0.9" }, CancellationToken.None);
+    Check(r is { Ok: false, Status: 409 }, "host change refused");
+    Check(svc.GetSettings().Host == "127.0.0.1" && amp.Count("99") == 0, "still connected, not released");
+    Check((await svc.ApplySettingsAsync(svc.GetSettings() with { PowerClass = 600 }, CancellationToken.None)).Ok,
+        "display settings may still change");
     await svc.DisposeAsync();
 });
 

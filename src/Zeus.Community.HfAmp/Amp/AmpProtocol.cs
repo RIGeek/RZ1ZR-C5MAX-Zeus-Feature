@@ -12,7 +12,7 @@ namespace Zeus.Community.HfAmp.Amp;
 ///
 ///   TCP 5005  host -> amp   two ASCII digits per command, no terminator
 ///             amp  -> host  status push, sent whenever any field changes:
-///                           "temp,volts*10,band,antenna,flag4,tx,fanHigh,bypass"
+///                           "temp,volts*10,band,antenna,fault,tx,fanHigh,bypass"
 ///   UDP 5010  host sends "11"; while the amp transmits it streams
 ///             "forward,reflected,current,input" raw detector counts (~20 Hz)
 /// </summary>
@@ -73,22 +73,24 @@ internal readonly record struct AmpStatus(
     bool Tx, bool FanHigh, bool Bypass)
 {
     /// <summary>
-    /// The supply setting is user adjustable (about 42 V to 56 V), so "high"
-    /// is inferred from the measured voltage and is only a heuristic.
+    /// The amp does not report which supply setting is active, so it is inferred from the measured
+    /// voltage: above the midpoint between the low setting and the owner's nominal high setting.
     /// </summary>
-    public bool HighVoltage => Volts >= Calibration.HighVoltageThreshold;
+    public bool IsHighSupply(double nominalHighVolts) =>
+        Volts >= Calibration.HighSupplyThreshold(nominalHighVolts);
 }
 
 /// <summary>
 /// Splits the status byte stream into messages. Messages have no delimiter, so
 /// two pushes can arrive in one read or one push can be split across reads.
-/// Fields after the second are single digits, which makes the format
-/// unambiguous even when messages run together.
+/// Band, antenna and the three flags are single digits, so the last field of one
+/// message cannot swallow the first digits of the next. The fault code sits between
+/// two commas and may have more than one digit, as the vendor application allows.
 /// </summary>
 internal sealed class StatusStream
 {
     private static readonly Regex Message = new(
-        @"(\d+),(\d+),(\d),(\d),(\d),(\d),(\d),(\d)",
+        @"(\d+),(\d+),(\d),(\d),(\d+),(\d),(\d),(\d)",
         RegexOptions.CultureInvariant);
 
     private const int MaxTail = 64;
@@ -154,14 +156,18 @@ internal readonly record struct Readings(
     double? Swr, double? EfficiencyPercent);
 
 /// <summary>
-/// Meter calibration, fitted to the amplifier's own front-panel readings. Forward power was compared
+/// Meter calibration, fitted to the amplifier's own front-panel readings on a 1200 W controller. Forward power was compared
 /// at five points (42-388 W), reflected power at five (1-29 W) and current at six (0.9-20.5 A); the
 /// ratio was constant across each range (power within about 1 W, current within 0.1 A), so one scale
 /// factor per quantity is enough. The same power scale fits forward and reflected. Input power has
 /// not been compared and uses the same scale. Treat it as roughly +/-3 % and possibly band dependent.
 ///
-/// The front panel current is about 1.5 times what the vendor application shows, so it may include
-/// stages other than the final transistors; efficiency below is a drain estimate on that current.
+/// The front panel current is about 1.55 times what the vendor application shows (Helios DX uses
+/// 0.132 A per count at 1200 W); efficiency below is a drain estimate on the front-panel current.
+///
+/// The controller comes in 600, 1200, 2400 and 4800 W versions. Helios DX 1.30 scales forward and
+/// reflected power and current by the version (power divisor 952/476/238/119, amps per count
+/// 0.066/0.132/0.264/0.528) but not input power, and so does this class.
 /// </summary>
 internal static class Calibration
 {
@@ -178,15 +184,33 @@ internal static class Calibration
     public const double MinEfficiencyForwardW = 10;
     public const double MinEfficiencyCurrentA = 1;
 
-    /// <summary>Supply voltage at or above which the "high" supply setting is assumed.</summary>
-    public const double HighVoltageThreshold = 45.0;
+    /// <summary>Controller versions, by rated output. The calibration above was fitted on the 1200 W one.</summary>
+    public static readonly int[] PowerClasses = [600, 1200, 2400, 4800];
+    public const int DefaultPowerClass = 1200;
 
-    public static Readings Compute(double forward, double reflected, double current, double input, double volts)
+    public static bool IsPowerClass(int watts) => Array.IndexOf(PowerClasses, watts) >= 0;
+
+    /// <summary>The supply voltage of the "low" setting (command 41).</summary>
+    public const double LowSupplyVolts = 42.0;
+
+    /// <summary>Nominal "high" supply voltages offered by Helios DX 1.30 (default 48 V).</summary>
+    public static readonly double[] HighSupplyChoices = [48.0, 50.0, 53.5, 58.3];
+    public const double DefaultHighSupplyVolts = 48.0;
+
+    public static bool IsHighSupplyChoice(double volts) =>
+        HighSupplyChoices.Any(v => Math.Abs(v - volts) < 0.05);
+
+    /// <summary>Measured voltage at or above which the high supply setting is assumed (45 V for 48 V).</summary>
+    public static double HighSupplyThreshold(double nominalHighVolts) => (LowSupplyVolts + nominalHighVolts) / 2;
+
+    public static Readings Compute(double forward, double reflected, double current, double input, double volts,
+        int powerClass = DefaultPowerClass)
     {
-        var fwdW = forward * forward / PowerDivisor;
-        var rflW = reflected * reflected / PowerDivisor;
-        var inpW = input * input / PowerDivisor;
-        var amps = current * AmpsPerCount;
+        var scale = (IsPowerClass(powerClass) ? powerClass : DefaultPowerClass) / (double)DefaultPowerClass;
+        var fwdW = forward * forward * scale / PowerDivisor;
+        var rflW = reflected * reflected * scale / PowerDivisor;
+        var inpW = input * input / PowerDivisor;           // input coupler does not change with the version
+        var amps = current * AmpsPerCount * scale;
 
         // Same ratio the vendor application displays: (f + r) / (f - r) on the raw counts.
         double? swr = null;
@@ -194,8 +218,8 @@ internal static class Calibration
             swr = Math.Min(99.0, (forward + reflected) / (forward - reflected));
 
         // Drain efficiency estimate: RF output power / (supply volts x front-panel current).
-        // The vendor application showed 82 % for its own screenshot; its formula is unknown and
-        // cannot be reproduced from these readings, so treat this as an estimate.
+        // Helios DX computes its figure from the on-screen bar lengths in pixels, so it depends on
+        // the window layout and is not comparable; this one uses the measured values.
         double? eff = null;
         if (fwdW >= MinEfficiencyForwardW && amps >= MinEfficiencyCurrentA && volts > 0)
             eff = Math.Clamp(100.0 * fwdW / (volts * amps), 0.0, 100.0);

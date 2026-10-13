@@ -28,6 +28,7 @@
 .com-n1mjf-hfamp button:disabled { opacity: .45; cursor: not-allowed; }
 .com-n1mjf-hfamp button:focus-visible, .com-n1mjf-hfamp input:focus-visible { outline: 2px solid var(--accent-bright); outline-offset: 2px; }
 .com-n1mjf-hfamp input[type="text"] { font: inherit; font-family: var(--font-mono); font-size: 13px; color: var(--fg-0); background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 5px 8px; min-height: 30px; min-width: 0; flex: 1 1 150px; }
+.com-n1mjf-hfamp select { font: inherit; font-family: var(--font-mono); font-size: 13px; color: var(--fg-0); background: var(--bg-inset); border: 1px solid var(--line-strong); border-radius: var(--r-sm); padding: 4px 6px; min-height: 30px; min-width: 0; max-width: 200px; }
 .com-n1mjf-hfamp label.hfa-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-1); }
 .com-n1mjf-hfamp input[type="checkbox"] { accent-color: var(--accent); }
 .com-n1mjf-hfamp .hfa-note { font-size: 11px; color: var(--fg-3); margin: 0; }

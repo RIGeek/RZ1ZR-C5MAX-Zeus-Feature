@@ -6,7 +6,9 @@ Control and metering for a network-connected HF LDMOS amplifier with a RZ1ZR con
 * **Efficiency %** (estimate: output power ÷ (supply V × current))
 * **Band following**: the amp is moved to the band the radio is tuned to (edge-triggered,
   so a manual band choice sticks until the radio changes band; never switches while transmitting)
-* Band, antenna, supply low/high, cooling, bypass and reset controls (locked while transmitting)
+* Band, antenna, supply low/high, cooling, bypass and reset controls (all locked while transmitting)
+* Settings for the controller power class (600 / 1200 / 2400 / 4800 W, scales the power and current readings),
+  the nominal high supply voltage (48.0 / 50.0 / 53.5 / 58.3 V, used to tell High from Low) and °C or °F
 * Hands the amp back to its front panel (command `99`) when Zeus shuts down
 
 The plugin only *reads* the radio (`ReadRadioState`); it never retunes or keys it.

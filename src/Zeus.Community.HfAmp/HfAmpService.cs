@@ -21,7 +21,8 @@ internal sealed record ApiMeters(
     double? Swr, double? EfficiencyPercent, int[] Raw);
 
 internal sealed record ApiControls(
-    bool FansForced, string? BandSelect, string? Message, string[] Bands, int Antennas);
+    bool FansForced, string? BandSelect, string? Message, string[] Bands, int Antennas,
+    int PowerClass, int[] PowerClasses, double HighSupplyVolts, double[] HighSupplyChoices);
 
 internal sealed record ApiFollow(bool Available, bool Enabled, long? RadioHz, int? RadioBand, string State);
 
@@ -56,6 +57,7 @@ internal sealed class HfAmpService : IAsyncDisposable
     {
         _settings = await _store.LoadAsync(ct).ConfigureAwait(false);
         Follower.Enabled = _settings.FollowBand;
+        Amp.PowerClass = _settings.PowerClass;
         await Amp.StartAsync(_settings.Host).ConfigureAwait(false);
         _followTask = Task.Run(() => Follower.RunAsync(_cts.Token));
     }
@@ -72,16 +74,26 @@ internal sealed class HfAmpService : IAsyncDisposable
         var host = string.IsNullOrWhiteSpace(next.Host) ? null : next.Host.Trim();
         if (host is not null && !IsValidHost(host))
             return CommandResult.Invalid("Enter an IPv4 address or host name");
+        if (!Calibration.IsPowerClass(next.PowerClass))
+            return CommandResult.Invalid("Power class must be 600, 1200, 2400 or 4800 W");
+        if (!Calibration.IsHighSupplyChoice(next.HighSupplyVolts))
+            return CommandResult.Invalid("High supply must be 48.0, 50.0, 53.5 or 58.3 V");
 
         await _settingsLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var normalized = new AmpSettings(host, next.FollowBand, _settings.UiPrefs);
+            var normalized = new AmpSettings(host, next.FollowBand, _settings.UiPrefs,
+                next.PowerClass, Calibration.HighSupplyChoices.First(v => Math.Abs(v - next.HighSupplyVolts) < 0.05));
             var hostChanged = !string.Equals(_settings.Host, host, StringComparison.OrdinalIgnoreCase);
+
+            // Changing the address hands the amp back to its front panel, so not in the middle of a transmission.
+            if (hostChanged && Amp.GetSnapshot().Status is { Tx: true })
+                return CommandResult.Blocked("The amplifier address cannot change while transmitting");
 
             await _store.SaveAsync(normalized, ct).ConfigureAwait(false);
             _settings = normalized;
             Follower.Enabled = normalized.FollowBand;
+            Amp.PowerClass = normalized.PowerClass;
             if (hostChanged) await Amp.StartAsync(host).ConfigureAwait(false);
             return CommandResult.Success("Settings saved");
         }
@@ -116,7 +128,8 @@ internal sealed class HfAmpService : IAsyncDisposable
 
         ApiAmp? amp = s.Status is { } st
             ? new ApiAmp(st.TempC, st.Volts, st.Band, AmpProtocol.BandName(st.Band), st.Antenna, st.Flag4,
-                st.Flag4 != 0, AmpProtocol.FaultText(st.Flag4), st.Tx, st.FanHigh, st.Bypass, st.HighVoltage)
+                st.Flag4 != 0, AmpProtocol.FaultText(st.Flag4), st.Tx, st.FanHigh, st.Bypass,
+                st.IsHighSupply(_settings.HighSupplyVolts))
             : null;
 
         ApiMeters? meters = s.Meter is { } m
@@ -133,10 +146,18 @@ internal sealed class HfAmpService : IAsyncDisposable
         return new ApiStatus(
             new ApiConnection(s.Link.ToString().ToLowerInvariant(), s.Host, s.Error),
             amp, meters,
-            new ApiControls(s.FansForced, s.BandSelect, s.Message, AmpProtocol.BandNames, AmpProtocol.AntennaCount),
+            new ApiControls(s.FansForced, s.BandSelect, s.Message, AmpProtocol.BandNames, AmpProtocol.AntennaCount,
+                _settings.PowerClass, Calibration.PowerClasses, _settings.HighSupplyVolts, Calibration.HighSupplyChoices),
             follow,
-            new ApiLimits(1300, 100, 15, 40),
+            Limits(_settings.PowerClass),
             s.SampledUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
+    }
+
+    /// <summary>Helios DX gauge full scales for the 1200 W version, scaled by version (input is not scaled).</summary>
+    private static ApiLimits Limits(int powerClass)
+    {
+        var k = powerClass / (double)Calibration.DefaultPowerClass;
+        return new ApiLimits(1300 * k, 100 * k, 15, 40 * k);
     }
 
     public async ValueTask DisposeAsync()

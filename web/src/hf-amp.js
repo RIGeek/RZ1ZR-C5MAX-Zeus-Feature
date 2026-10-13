@@ -46,6 +46,7 @@ const METER_DEFS = [
 ];
 const DEFAULT_PREFS = {
   peakHold: false,
+  tempF: false,
   chime: { on: true, volume: 0.5, repeat: false },
   meters: Object.fromEntries(METER_DEFS.map((m) => [m.key, { ...m.d }])),
 };
@@ -64,6 +65,7 @@ function normalizePrefs(raw) {
   const c = r.chime ?? {};
   return {
     peakHold: !!r.peakHold,
+    tempF: !!r.tempF,
     chime: {
       on: c.on === undefined ? true : !!c.on,
       volume: isNum(c.volume) ? Math.max(0, Math.min(1, c.volume)) : 0.5,
@@ -74,6 +76,13 @@ function normalizePrefs(raw) {
 }
 
 // Returns an error string, or null when the range and zones make sense.
+// Temperature arrives in °C; Fahrenheit is a display choice (ranges stay stored in °C).
+const toF = (c) => c * 9 / 5 + 32;
+function tempMeter(m, fahrenheit) {
+  if (!fahrenheit) return m;
+  return { ...m, min: toF(m.min), max: toF(m.max), warn: toF(m.warn), bad: toF(m.bad) };
+}
+
 function validateMeter(m, v) {
   if (!(v.min < v.max)) return 'Minimum must be below maximum';
   if (m.zones !== false) {
@@ -418,11 +427,12 @@ function Panel({ api }) {
   const { connection: c, amp, meters, controls, follow } = status;
   const connected = c.state === 'connected';
   const tx = !!amp?.tx;
-  const lockTx = tx; // band/antenna/supply changes are refused by the backend while transmitting
+  const lockTx = tx; // every control is refused by the backend while transmitting, as in Helios DX
   const live = !!meters?.fresh;
   const idleLive = connected && !!amp;
   const unconfigured = !c.host;
   const M = prefs.meters;
+  const T = tempMeter(M.Temp, prefs.tempF);
   const swrZone = live ? zoneOf(meters.swr, M.SWR, true) : null;
   const fault = !!amp?.fault;
   const faultText = amp?.faultText || 'Fault';
@@ -466,7 +476,7 @@ function Panel({ api }) {
               autoComplete: 'off', spellCheck: false,
               onChange: (e) => { hostTouched.current = true; setHostDraft(e.target.value); },
             }),
-            h('button', { type: 'submit' }, 'Connect')),
+            h('button', { type: 'submit', disabled: tx, title: tx ? 'Not while transmitting' : undefined }, 'Connect')),
           h('p', { className: 'hfa-note' }, 'Zeus takes control of the amplifier while connected and hands it back to its front panel when Zeus closes.')),
         h('div', { className: 'hfa-group' },
           h('label', { className: 'hfa-check' },
@@ -478,6 +488,25 @@ function Panel({ api }) {
           follow.available
             ? h('p', { className: 'hfa-note' }, [followLabel, follow.enabled ? follow.state : ''].filter(Boolean).join(' · ') || 'Waiting for the radio')
             : h('p', { className: 'hfa-note' }, 'Radio state is not available, so band following is off.')),
+        h('div', { className: 'hfa-group' },
+          h('label', { className: 'hfa-label', htmlFor: `${ROOT}-class` }, 'Controller power class'),
+          h('select', {
+            id: `${ROOT}-class`, value: controls.powerClass,
+            onChange: (e) => post('/settings', { powerClass: Number(e.target.value) }),
+          }, controls.powerClasses.map((w) => h('option', { key: w, value: w }, `${w} W`))),
+          h('p', { className: 'hfa-note' }, 'The controller version. It scales the output, reflected and current readings (input is not affected). Meter ranges below are separate; adjust them to suit.')),
+        h('div', { className: 'hfa-group' },
+          h('label', { className: 'hfa-label', htmlFor: `${ROOT}-supply` }, 'High supply setting'),
+          h('select', {
+            id: `${ROOT}-supply`, value: controls.highSupplyVolts,
+            onChange: (e) => post('/settings', { highSupplyVolts: Number(e.target.value) }),
+          }, controls.highSupplyChoices.map((v) => h('option', { key: v, value: v }, `${fmt(v, 1)} V`))),
+          h('p', { className: 'hfa-note' }, 'The voltage your amplifier runs at on High. Used to tell High from Low; it does not change the amplifier.')),
+        h('div', { className: 'hfa-group' },
+          h('label', { className: 'hfa-check' },
+            h('input', { type: 'checkbox', checked: prefs.tempF, onChange: (e) => updatePrefs({ tempF: e.target.checked }) }),
+            'Show temperature in °F'),
+          h('p', { className: 'hfa-note' }, 'Temperature ranges below are still entered in °C.')),
         h('div', { className: 'hfa-group' },
           h('label', { className: 'hfa-check' },
             h('input', { type: 'checkbox', checked: peakHold, onChange: (e) => updatePrefs({ peakHold: e.target.checked }) }),
@@ -534,7 +563,8 @@ function Panel({ api }) {
   }, `Ant ${n}`);
 
   const toggle = (label, pressed, action, on, off, opts = {}) => h('button', {
-    type: 'button', 'aria-pressed': pressed, disabled: !connected || opts.disabled,
+    type: 'button', 'aria-pressed': pressed, disabled: !connected || lockTx,
+    title: lockTx ? 'Locked while transmitting' : undefined,
     className: opts.warn ? 'hfa-warn' : undefined,
     onClick: () => cmd({ action, mode: pressed ? off : on }),
   }, label);
@@ -570,7 +600,7 @@ function Panel({ api }) {
         h(Meter, { label: 'SWR', value: live ? meters.swr : null, unit: ':1', min: M.SWR.min, max: M.SWR.max, zones: M.SWR, digits: 2, live, zone: swrZone, peak: pk('SWR') }),
         h(Meter, { label: 'Efficiency', value: live ? meters.efficiencyPercent : null, unit: '%', min: M.Efficiency.min, max: M.Efficiency.max, digits: 0, live }),
         h(Meter, { label: 'Supply', value: idleLive ? amp.volts : null, unit: 'V', min: M.Supply.min, max: M.Supply.max, zones: M.Supply, digits: 1, live: idleLive, zone: zoneOf(amp?.volts, M.Supply) }),
-        h(Meter, { label: 'Temp', value: idleLive ? amp.tempC : null, unit: '°C', min: M.Temp.min, max: M.Temp.max, zones: M.Temp, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, M.Temp) })),
+        h(Meter, { label: 'Temp', value: idleLive ? (prefs.tempF ? toF(amp.tempC) : amp.tempC) : null, unit: prefs.tempF ? '°F' : '°C', min: T.min, max: T.max, zones: T, digits: 0, live: idleLive, zone: zoneOf(amp?.tempC, M.Temp) })),
       h('div', { className: 'hfa-readouts' },
         h(Read, { k: 'Band', v: amp ? amp.bandName : '—' }),
         h(Read, { k: 'Output', big: true, zone: live ? zoneOf(meters.forwardW, M.Output) : null,
@@ -601,16 +631,16 @@ function Panel({ api }) {
         h('h2', { className: 'hfa-label' }, 'Supply'),
         h('div', { className: 'hfa-row', role: 'group', 'aria-label': 'Supply voltage' },
           h('button', { type: 'button', 'aria-pressed': amp ? !amp.highVoltage : false, disabled: !connected || lockTx,
-            onClick: () => cmd({ action: 'voltage', mode: 'low' }) }, 'Low'),
+            onClick: () => cmd({ action: 'voltage', mode: 'low' }) }, 'Low (42 V)'),
           h('button', { type: 'button', 'aria-pressed': amp ? amp.highVoltage : false, disabled: !connected || lockTx,
-            onClick: () => cmd({ action: 'voltage', mode: 'high' }) }, 'High'))),
+            onClick: () => cmd({ action: 'voltage', mode: 'high' }) }, `High (${fmt(controls.highSupplyVolts, 1)} V)`))),
       h('div', { className: 'hfa-group' },
         h('h2', { className: 'hfa-label' }, 'Cooling and protection'),
         h('div', { className: 'hfa-row' },
           toggle('Fans 100%', !!controls.fansForced, 'fans', 'force', 'auto'),
-          toggle('Bypass', !!amp?.bypass, 'bypass', 'on', 'off', { warn: true, disabled: false }),
+          toggle('Bypass', !!amp?.bypass, 'bypass', 'on', 'off', { warn: true }),
           h('button', { type: 'button', disabled: !connected || lockTx, title: lockTx ? 'Reset is not accepted while transmitting' : undefined, onClick: () => cmd({ action: 'reset' }) }, 'Reset')),
-        h('p', { className: 'hfa-note' }, 'Bypass cuts the LDMOS supply. Most changes, including Reset, are locked while transmitting.'))));
+        h('p', { className: 'hfa-note' }, 'Bypass cuts the LDMOS supply. All controls, including Reset, are locked while transmitting.'))));
 }
 
 // Maps /status onto the host's standard amplifier meter (the meters pane).

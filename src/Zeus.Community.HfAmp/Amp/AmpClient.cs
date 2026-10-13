@@ -36,7 +36,7 @@ internal sealed class AmpClientOptions
     /// <summary>Attempts before giving up on a band change. 0 retries until accepted or cancelled.</summary>
     public int BandMaxAttempts { get; init; } = 5;
 
-    /// <summary>Permit band/antenna/voltage changes while the amp reports TX. Off by default.</summary>
+    /// <summary>Permit any control change while the amp reports TX. Off by default, as in Helios DX.</summary>
     public bool AllowChangesDuringTx { get; init; }
 
     public TimeSpan MeterFreshFor { get; init; } = TimeSpan.FromSeconds(1);
@@ -73,6 +73,7 @@ internal sealed class AmpClient : IAsyncDisposable
     private DateTime _meterUtc = DateTime.MinValue;
     private DateTime _helloUtc = DateTime.MinValue;
     private bool _fansForced;
+    private int _powerClass = Calibration.DefaultPowerClass;
 
     private CancellationTokenSource? _bandCts;
     private Task? _bandTask;
@@ -149,6 +150,17 @@ internal sealed class AmpClient : IAsyncDisposable
 
     public ValueTask DisposeAsync() => new(StopAsync(release: true));
 
+    /// <summary>Controller version in watts; scales the power and current readings.</summary>
+    public int PowerClass
+    {
+        get { lock (_gate) return _powerClass; }
+        set
+        {
+            if (!Calibration.IsPowerClass(value)) throw new ArgumentOutOfRangeException(nameof(value));
+            lock (_gate) _powerClass = value;
+        }
+    }
+
     // ------------------------------------------------------------------ state
 
     public AmpSnapshot GetSnapshot()
@@ -161,7 +173,7 @@ internal sealed class AmpClient : IAsyncDisposable
                 var fresh = DateTime.UtcNow - _meterUtc <= _opt.MeterFreshFor;
                 var readings = Calibration.Compute(
                     _smoothed.Forward, _smoothed.Reflected, _smoothed.Current, _smoothed.Input,
-                    _status?.Volts ?? 0);
+                    _status?.Volts ?? 0, _powerClass);
                 meter = new MeterView(fresh, readings, [raw.Forward, raw.Reflected, raw.Current, raw.Input]);
             }
 
@@ -455,7 +467,7 @@ internal sealed class AmpClient : IAsyncDisposable
 
     public async Task<CommandResult> SetFansAsync(bool forced)
     {
-        var blocked = Precheck(false, "Cooling");
+        var blocked = Precheck(true, "Cooling change");
         if (blocked is not null) return blocked;
 
         var result = await SendAsync(forced ? AmpProtocol.FansForced : AmpProtocol.FansAuto,
@@ -466,9 +478,9 @@ internal sealed class AmpClient : IAsyncDisposable
         return result;
     }
 
-    /// <summary>Cutting the LDMOS supply is always allowed; restoring it under RF drive is not.</summary>
+    /// <summary>Like every other control, bypass is locked while the amp transmits (as in Helios DX).</summary>
     public async Task<CommandResult> SetBypassAsync(bool on) =>
-        Precheck(!on, "Restoring the LDMOS supply")
+        Precheck(true, "Bypass")
         ?? await SendAsync(on ? AmpProtocol.BypassOn : AmpProtocol.BypassOff,
             on ? "Bypass on: LDMOS supply cut" : "Bypass off: LDMOS supply restoring").ConfigureAwait(false);
 
