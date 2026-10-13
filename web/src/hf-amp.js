@@ -18,7 +18,7 @@ function ensureStyles() {
   document.head.appendChild(el);
 }
 
-// callBackend resolves to a fetch Response (not parsed JSON); parse it and surface HTTP errors.
+// callBackend resolves to a Response object (not parsed JSON); parse it and surface HTTP errors.
 async function call(api, method, path, body) {
   const res = await api.callBackend(method, path, body);
   let data = null;
@@ -67,6 +67,7 @@ function normalizePrefs(raw) {
   const c = r.chime ?? {};
   return {
     peakHold: !!r.peakHold,
+    sections: Object.fromEntries(['controls'].filter((k) => typeof r.sections?.[k] === 'boolean').map((k) => [k, r.sections[k]])),
     tempF: !!r.tempF,
     chime: {
       on: c.on === undefined ? true : !!c.on,
@@ -94,14 +95,10 @@ function validateMeter(m, v) {
 }
 
 // Shared by the panel and the meters-pane hook, so both see the same ranges. Persisted by the backend
-// (survives restarts, shared by every browser); localStorage only seeds the first paint.
-const prefsStore = { value: normalizePrefs(loadJsonEarly()), listeners: new Set(), loading: null, timer: 0 };
-function loadJsonEarly() {
-  try { return JSON.parse(localStorage.getItem('com-n1mjf-hfamp.prefs') || '{}') || {}; } catch { return {}; }
-}
+// (survives restarts, shared by every browser). No browser storage is used.
+const prefsStore = { value: normalizePrefs({}), listeners: new Set(), loading: null, timer: 0 };
 function setPrefsLocal(v) {
   prefsStore.value = v;
-  try { localStorage.setItem('com-n1mjf-hfamp.prefs', JSON.stringify(v)); } catch { /* storage unavailable */ }
   prefsStore.listeners.forEach((f) => f());
 }
 function loadPrefs(api) {
@@ -145,37 +142,39 @@ function zoneOf(value, z, strict) {
   return over(z.bad) ? 'bad' : over(z.warn) ? 'warn' : 'ok';
 }
 
-// ---- Fault chime: two soft sine notes with a gentle decay. Browsers only allow sound after the person
-// has clicked or pressed a key in the page once; unlockAudio() is wired to the first such gesture.
+// ---- Fault chime: two soft sine notes with a gentle decay. Browsers only allow sound after the person has
+// clicked or pressed a key in the page once; after that, resuming the audio context works at any time.
 let audioCtx = null;
-function unlockAudio() {
-  try {
-    const AC = window.AudioContext || window.webkitAudioContext;
-    if (!AC) return;
-    audioCtx ??= new AC();
-    if (audioCtx.state === 'suspended') audioCtx.resume().catch(() => {});
-  } catch { /* audio unavailable */ }
+function audioContext() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) return null;
+  try { audioCtx ??= new AC(); } catch { return null; }
+  return audioCtx;
 }
 function audioState() {
   if (!(window.AudioContext || window.webkitAudioContext)) return 'unsupported';
-  return audioCtx && audioCtx.state === 'running' ? 'ready' : 'locked';
+  const active = navigator.userActivation?.hasBeenActive;
+  return audioCtx?.state === 'running' || active ? 'ready' : 'locked';
 }
-function playChime(volume) {
-  if (audioState() !== 'ready') return false;
-  const t0 = audioCtx.currentTime + 0.02;
+async function playChime(volume) {
+  const ctx = audioContext();
+  if (!ctx) return false;
+  if (ctx.state !== 'running') { try { await ctx.resume(); } catch { /* blocked */ } }
+  if (ctx.state !== 'running') return false;
+  const t0 = ctx.currentTime + 0.02;
   const peak = 0.22 * Math.max(0, Math.min(1, volume));   // never louder than a quarter of full scale
   if (peak <= 0) return true;
   [[784, 0], [587.33, 0.32]].forEach(([freq, at]) => {    // G5 then D5: falling, soft, not shrill
     for (const [mult, level] of [[1, 1], [2, 0.18]]) {    // a faint octave adds a bell-like warmth
-      const osc = audioCtx.createOscillator();
-      const gain = audioCtx.createGain();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
       osc.type = 'sine';
       osc.frequency.value = freq * mult;
       const t = t0 + at;
       gain.gain.setValueAtTime(0.0001, t);
       gain.gain.exponentialRampToValueAtTime(peak * level, t + 0.03);
       gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.85);
-      osc.connect(gain).connect(audioCtx.destination);
+      osc.connect(gain).connect(ctx.destination);
       osc.start(t);
       osc.stop(t + 0.9);
     }
@@ -265,14 +264,6 @@ function Gear() {
   }, h('circle', { cx: 12, cy: 12, r: 6 }), h('circle', { cx: 12, cy: 12, r: 2 }), spokes);
 }
 
-const STORE = `${ROOT}.sections`;
-function loadJson(key) {
-  try { return JSON.parse(localStorage.getItem(key) || '{}') || {}; } catch { return {}; }
-}
-function saveJson(key, v) {
-  try { localStorage.setItem(key, JSON.stringify(v)); } catch { /* storage unavailable */ }
-}
-
 // A card with a button header that collapses its body.
 function Section({ id, title, summary, open, onToggle, children }) {
   const expanded = !!open;
@@ -335,7 +326,6 @@ function Panel({ api }) {
   const [msg, setMsg] = React.useState({ text: '', err: false });
   const [hostDraft, setHostDraft] = React.useState('');
   const hostTouched = React.useRef(false);
-  const [openMap, setOpenMap] = React.useState(() => loadJson(STORE));
   const prefs = usePrefs();
   const [draft, setDraft] = React.useState(null);              // unsaved range edits, keyed by meter
   const [rangeMsg, setRangeMsg] = React.useState({ text: '', err: false });
@@ -404,12 +394,9 @@ function Panel({ api }) {
     }
   };
   const cmd = (body) => post('/command', body);
-  const isOpen = (id, dflt) => (openMap[id] === undefined ? dflt : !!openMap[id]);
-  const flip = (id, dflt) => () => setOpenMap((m) => {
-    const next = { ...m, [id]: !(m[id] === undefined ? dflt : m[id]) };
-    saveJson(STORE, next);
-    return next;
-  });
+  // Whether the Controls card is expanded is kept with the other display settings.
+  const isOpen = (id, dflt) => (prefs.sections[id] === undefined ? dflt : !!prefs.sections[id]);
+  const flip = (id, dflt) => () => updatePrefs({ sections: { ...prefs.sections, [id]: !isOpen(id, dflt) } });
   // Toggles and the volume slider save straight away; ranges wait for the Save button.
   const updatePrefs = (patch, opts) => {
     savePrefs(api, { ...prefsStore.value, ...patch }, opts).then((r) => {
@@ -521,7 +508,7 @@ function Panel({ api }) {
               })),
             h('button', {
               type: 'button',
-              onClick: () => { unlockAudio(); setTimeout(() => { if (!playChime(prefs.chime.volume)) setMsg({ text: 'The browser is blocking sound. Click anywhere in Zeus and try again.', err: true }); }, 30); },
+              onClick: async () => { if (!(await playChime(prefs.chime.volume))) setMsg({ text: 'The browser is blocking sound. Click anywhere in Zeus and try again.', err: true }); },
             }, 'Test chime')),
           h('label', { className: 'hfa-check' },
             h('input', { type: 'checkbox', checked: prefs.chime.repeat, disabled: !prefs.chime.on, onChange: (e) => setChime({ repeat: e.target.checked }) }),
@@ -657,16 +644,6 @@ function toAmplifierMeter(status) {
 
 export default function register(api) {
   ensureStyles();
-  // Browsers allow sound only after a user gesture; the first click or key press anywhere arms the chime.
-  const arm = () => {
-    unlockAudio();
-    if (audioState() === 'ready') {
-      document.removeEventListener('pointerdown', arm, true);
-      document.removeEventListener('keydown', arm, true);
-    }
-  };
-  document.addEventListener('pointerdown', arm, true);
-  document.addEventListener('keydown', arm, true);
   api.registerPanel({
     id: 'hf-amp',
     component: () => h(Panel, { api }),

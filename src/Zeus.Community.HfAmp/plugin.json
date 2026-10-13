@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "com.n1mjf.hfamp",
   "name": "RZ1ZR LDMOS Amplifier",
-  "version": "0.1.0",
+  "version": "0.9.0-beta.1",
   "author": "N1MJF",
   "description": "Monitoring and basic control for an amp with an RZ1ZR C5MAX controller.",
   "homepage": "https://github.com/RIGeek/RZ1ZR-C5MAX-Zeus-Feature",
