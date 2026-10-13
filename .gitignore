@@ -5,3 +5,6 @@ node_modules/
 artifacts/
 .zeus-build/
 src/Zeus.Community.HfAmp/ui/
+
+# Build output (publish the ZIP as a GitHub Release asset, not in git)
+package/

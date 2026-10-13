@@ -1,0 +1,6 @@
+# Reproducible builds: the catalog's rebuild check runs on Linux, so every text file must be checked out
+# with LF endings on every platform (a Windows checkout with CRLF produces different package bytes).
+* text=auto eol=lf
+*.png binary
+*.zip binary
+*.dll binary
