@@ -18,7 +18,8 @@ public sealed class HfAmpPlugin : IZeusPlugin, IBackendPlugin
         var service = new HfAmpService(
             context.Logger,
             HostBridge.CreateSettingsStore(context),
-            HostBridge.CreateRadioStateSource(context));
+            HostBridge.CreateRadioStateSource(context),
+            about: HostBridge.CreateAbout(context));
         await service.StartAsync(ct);
         _service = service;
     }

@@ -94,3 +94,9 @@
 .com-n1mjf-hfamp .hfa-bar.stale .hfa-tip { opacity: .4; }
 .com-n1mjf-hfamp .hfa-peak { position: absolute; top: 0; bottom: 0; width: 2px; margin-left: -1px; background: var(--fg-0); z-index: 4; }
 @media (prefers-reduced-motion: reduce) { .com-n1mjf-hfamp .hfa-bar > i, .com-n1mjf-hfamp .hfa-tip { transition: none; } }
+
+.com-n1mjf-hfamp .hfa-about-name { margin: 0; font-weight: 600; color: var(--fg-0); }
+.com-n1mjf-hfamp .hfa-about { font-size: 12px; display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 6px 0; }
+.com-n1mjf-hfamp .hfa-about dt { color: var(--fg-2); }
+.com-n1mjf-hfamp .hfa-about dd { margin: 0; color: var(--fg-0); }
+.com-n1mjf-hfamp .hfa-note a { color: var(--accent-bright); }

@@ -668,6 +668,72 @@ Test("service: the amplifier address cannot change while transmitting", async ()
     await svc.DisposeAsync();
 });
 
+Test("startup defaults: antenna and supply are applied once, then left alone", async () =>
+{
+    var store = new MemorySettingsStore();
+    await store.SaveAsync(new AmpSettings("127.0.0.1", false, null, 1200, 3, 50), CancellationToken.None);
+    await using var amp = new MockAmp();
+    var svc = new HfAmpService(NullLogger.Instance, store, new FakeRadio(), Fast(amp),
+        startupOptions: new StartupDefaultsOptions { PollInterval = TimeSpan.FromMilliseconds(50), Resend = TimeSpan.FromMilliseconds(200) });
+    await svc.StartAsync(CancellationToken.None);
+    Check(await Until(() => amp.Count("33") >= 1), "antenna 3 commanded");
+    Check(await Until(() => amp.Count("52") == 1), "50 V commanded");
+    Check(await Until(() => svc.Startup.State.StartsWith("applied")), "reports applied: " + svc.Startup.State);
+    var before = amp.Commands.Length;
+    amp.Ant = 2; amp.Push();                       // operator picks another antenna by hand afterwards
+    await Task.Delay(500);
+    Check(amp.Commands.Length == before, "nothing re-applied after the first time");
+    Check(svc.BuildStatus().Controls is { StartupAntenna: 3, StartupVoltage: 50 }, "status reports the setting");
+    await svc.DisposeAsync();
+});
+
+Test("startup defaults: waits while transmitting or faulted, and zero means leave alone", async () =>
+{
+    var store = new MemorySettingsStore();
+    await store.SaveAsync(new AmpSettings("127.0.0.1", false, null, 1200, 4, 0), CancellationToken.None);
+    await using var amp = new MockAmp();
+    amp.Tx = 1; amp.Flag4 = 0;
+    var svc = new HfAmpService(NullLogger.Instance, store, new FakeRadio(), Fast(amp),
+        startupOptions: new StartupDefaultsOptions { PollInterval = TimeSpan.FromMilliseconds(50), Resend = TimeSpan.FromMilliseconds(200) });
+    await svc.StartAsync(CancellationToken.None);
+    await Until(() => svc.Amp.GetSnapshot().Status is not null);
+    await Task.Delay(400);
+    Check(amp.Count("34") == 0, "nothing sent while the amp transmits");
+    amp.Tx = 0; amp.Flag4 = 2; amp.Push();
+    await Task.Delay(400);
+    Check(amp.Count("34") == 0, "nothing sent while the amp reports a fault");
+    amp.Flag4 = 0; amp.Push();
+    Check(await Until(() => amp.Count("34") >= 1), "applied once clear");
+    Check(amp.Count("41") + amp.Count("51") + amp.Count("52") + amp.Count("53") + amp.Count("54") == 0, "voltage untouched when 0");
+    await svc.DisposeAsync();
+});
+
+Test("startup defaults: settings are validated and persisted", async () =>
+{
+    var store = new MemorySettingsStore();
+    await using var amp = new MockAmp();
+    var svc = new HfAmpService(NullLogger.Instance, store, new FakeRadio(), Fast(amp));
+    await svc.StartAsync(CancellationToken.None);
+    var cur = svc.GetSettings();
+    Check((await svc.ApplySettingsAsync(cur with { StartupAntenna = 5 }, CancellationToken.None)) is { Ok: false, Status: 400 }, "antenna 5 refused");
+    Check((await svc.ApplySettingsAsync(cur with { StartupVoltage = 51 }, CancellationToken.None)) is { Ok: false, Status: 400 }, "51 V refused");
+    Check((await svc.ApplySettingsAsync(cur with { StartupAntenna = 2, StartupVoltage = 58.25 }, CancellationToken.None)).Ok, "valid saved");
+    Check((await store.LoadAsync(CancellationToken.None)) is { StartupAntenna: 2, StartupVoltage: 58.25 }, "store updated");
+    Check((await svc.ApplySettingsAsync(svc.GetSettings() with { FollowBand = true }, CancellationToken.None)).Ok, "other change");
+    Check(svc.GetSettings() is { StartupAntenna: 2, StartupVoltage: 58.25 }, "other changes keep the start-up values");
+    await svc.DisposeAsync();
+});
+
+Test("about: status carries the plugin identity", async () =>
+{
+    await using var amp = new MockAmp();
+    var svc = new HfAmpService(NullLogger.Instance, new MemorySettingsStore(), new FakeRadio(), Fast(amp),
+        about: new AboutInfo("RZ1ZR LDMOS Amplifier", "1.0.0", "N1MJF", "GPL-2.0-or-later", "https://example.org"));
+    await svc.StartAsync(CancellationToken.None);
+    Check(svc.BuildStatus().About is { Version: "1.0.0", Author: "N1MJF" }, "about reported");
+    await svc.DisposeAsync();
+});
+
 // ------------------------------------------------------------------ run
 
 var failed = 0;

@@ -7,7 +7,11 @@ namespace Zeus.Community.HfAmp;
 /// <summary>Settings that survive a restart of Zeus.</summary>
 internal sealed record AmpSettings(
     string? Host, bool FollowBand, string? UiPrefs = null,
-    int PowerClass = Calibration.DefaultPowerClass);
+    int PowerClass = Calibration.DefaultPowerClass,
+    int StartupAntenna = 0, double StartupVoltage = 0);   // 0 = leave the amplifier as it is
+
+/// <summary>Shown on the panel's About page.</summary>
+internal sealed record AboutInfo(string Name, string Version, string Author, string License, string? Homepage);
 
 internal interface ISettingsStore
 {
@@ -23,6 +27,11 @@ internal interface ISettingsStore
 /// </summary>
 internal static class HostBridge
 {
+    /// <summary>Name, version, author, licence and homepage come from plugin.json, so the About page can never disagree with the package.</summary>
+    public static AboutInfo CreateAbout(IPluginContext context) =>
+        new(context.Manifest.Name, context.Manifest.Version, context.Manifest.Author,
+            context.Manifest.License, context.Manifest.Homepage);
+
     public static ISettingsStore CreateSettingsStore(IPluginContext context) =>
         new PluginSettingsStore(context.Settings);
 
@@ -36,6 +45,8 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
     private const string FollowKey = "followBand";
     private const string PrefsKey = "uiPrefs";
     private const string PowerClassKey = "powerClass";
+    private const string StartupAntennaKey = "startupAntenna";
+    private const string StartupVoltageKey = "startupVoltage";
 
     public async ValueTask<AmpSettings> LoadAsync(CancellationToken ct)
     {
@@ -45,9 +56,13 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
             var follow = await settings.GetAsync<bool?>(FollowKey, ct).ConfigureAwait(false);
             var prefs = await settings.GetAsync<string>(PrefsKey, ct).ConfigureAwait(false);
             var power = await settings.GetAsync<int?>(PowerClassKey, ct).ConfigureAwait(false);
+            var antenna = await settings.GetAsync<int?>(StartupAntennaKey, ct).ConfigureAwait(false);
+            var volts = await settings.GetAsync<double?>(StartupVoltageKey, ct).ConfigureAwait(false);
             return new AmpSettings(string.IsNullOrWhiteSpace(host) ? null : host, follow ?? false,
                 string.IsNullOrWhiteSpace(prefs) ? null : prefs,
-                power is int p && Calibration.IsPowerClass(p) ? p : Calibration.DefaultPowerClass);
+                power is int p && Calibration.IsPowerClass(p) ? p : Calibration.DefaultPowerClass,
+                antenna is int a && a is >= 1 and <= AmpProtocol.AntennaCount ? a : 0,
+                volts is double v && AmpProtocol.SupplyCommand(v) is not null ? v : 0);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -61,6 +76,8 @@ internal sealed class PluginSettingsStore(IPluginSettings settings) : ISettingsS
         await settings.SetAsync(FollowKey, s.FollowBand, ct).ConfigureAwait(false);
         await settings.SetAsync(PrefsKey, s.UiPrefs ?? string.Empty, ct).ConfigureAwait(false);
         await settings.SetAsync(PowerClassKey, s.PowerClass, ct).ConfigureAwait(false);
+        await settings.SetAsync(StartupAntennaKey, s.StartupAntenna, ct).ConfigureAwait(false);
+        await settings.SetAsync(StartupVoltageKey, s.StartupVoltage, ct).ConfigureAwait(false);
     }
 }
 

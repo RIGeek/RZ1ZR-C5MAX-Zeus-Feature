@@ -8,7 +8,9 @@ namespace Zeus.Community.HfAmp;
 
 internal sealed record ApiStatus(
     ApiConnection Connection, ApiAmp? Amp, ApiMeters? Meters,
-    ApiControls Controls, ApiFollow Follow, ApiLimits Limits, string? SampledUtc);
+    ApiControls Controls, ApiFollow Follow, ApiLimits Limits, ApiAbout About, string? SampledUtc);
+
+internal sealed record ApiAbout(string Name, string Version, string Author, string License, string? Homepage);
 
 internal sealed record ApiConnection(string State, string? Host, string? Error);
 
@@ -22,7 +24,8 @@ internal sealed record ApiMeters(
 
 internal sealed record ApiControls(
     bool FansForced, string? BandSelect, string? Message, string[] Bands, int Antennas,
-    int PowerClass, int[] PowerClasses, double[] SupplyPresets);
+    int PowerClass, int[] PowerClasses, double[] SupplyPresets,
+    int StartupAntenna, double StartupVoltage, string StartupState);
 
 internal sealed record ApiFollow(bool Available, bool Enabled, long? RadioHz, int? RadioBand, string State);
 
@@ -40,17 +43,23 @@ internal sealed class HfAmpService : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private AmpSettings _settings = new(null, false);
     private Task? _followTask;
+    private Task? _startupTask;
+    private readonly AboutInfo _about;
 
     public AmpClient Amp { get; }
     public BandFollower Follower { get; }
+    public StartupDefaults Startup { get; }
 
     public HfAmpService(
         ILogger log, ISettingsStore store, IRadioStateSource radio,
-        AmpClientOptions? ampOptions = null, BandFollowOptions? followOptions = null)
+        AmpClientOptions? ampOptions = null, BandFollowOptions? followOptions = null,
+        StartupDefaultsOptions? startupOptions = null, AboutInfo? about = null)
     {
+        _about = about ?? new AboutInfo("RZ1ZR LDMOS Amplifier", "dev", "", "", null);
         _store = store;
         Amp = new AmpClient(log, ampOptions);
         Follower = new BandFollower(Amp, radio, log, followOptions);
+        Startup = new StartupDefaults(Amp, log, startupOptions);
     }
 
     public async Task StartAsync(CancellationToken ct)
@@ -58,8 +67,11 @@ internal sealed class HfAmpService : IAsyncDisposable
         _settings = await _store.LoadAsync(ct).ConfigureAwait(false);
         Follower.Enabled = _settings.FollowBand;
         Amp.PowerClass = _settings.PowerClass;
+        Startup.Configure(_settings.StartupAntenna, _settings.StartupVoltage);
+        Startup.Reset();
         await Amp.StartAsync(_settings.Host).ConfigureAwait(false);
         _followTask = Task.Run(() => Follower.RunAsync(_cts.Token));
+        _startupTask = Task.Run(() => Startup.RunAsync(_cts.Token));
     }
 
     public AmpSettings GetSettings() => _settings;
@@ -76,11 +88,19 @@ internal sealed class HfAmpService : IAsyncDisposable
             return CommandResult.Invalid("Enter an IPv4 address or host name");
         if (!Calibration.IsPowerClass(next.PowerClass))
             return CommandResult.Invalid("Power class must be 600, 1200, 2400 or 4800 W");
+        if (next.StartupAntenna is < 0 or > AmpProtocol.AntennaCount)
+            return CommandResult.Invalid($"Start-up antenna must be 1 to {AmpProtocol.AntennaCount}, or 0 to leave it alone");
+        if (next.StartupVoltage != 0 && AmpProtocol.SupplyCommand(next.StartupVoltage) is null)
+            return CommandResult.Invalid("Start-up supply must be 42, 48, 50, 53.5 or 58.25 V, or 0 to leave it alone");
 
         await _settingsLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            var normalized = new AmpSettings(host, next.FollowBand, _settings.UiPrefs, next.PowerClass);
+            var normalized = _settings with
+            {
+                Host = host, FollowBand = next.FollowBand, PowerClass = next.PowerClass,
+                StartupAntenna = next.StartupAntenna, StartupVoltage = next.StartupVoltage,
+            };
             var hostChanged = !string.Equals(_settings.Host, host, StringComparison.OrdinalIgnoreCase);
 
             // Changing the address hands the amp back to its front panel, so not in the middle of a transmission.
@@ -91,7 +111,8 @@ internal sealed class HfAmpService : IAsyncDisposable
             _settings = normalized;
             Follower.Enabled = normalized.FollowBand;
             Amp.PowerClass = normalized.PowerClass;
-            if (hostChanged) await Amp.StartAsync(host).ConfigureAwait(false);
+            Startup.Configure(normalized.StartupAntenna, normalized.StartupVoltage);
+            if (hostChanged) { Startup.Reset(); await Amp.StartAsync(host).ConfigureAwait(false); }
             return CommandResult.Success("Settings saved");
         }
         finally
@@ -145,9 +166,11 @@ internal sealed class HfAmpService : IAsyncDisposable
             new ApiConnection(s.Link.ToString().ToLowerInvariant(), s.Host, s.Error),
             amp, meters,
             new ApiControls(s.FansForced, s.BandSelect, s.Message, AmpProtocol.BandNames, AmpProtocol.AntennaCount,
-                _settings.PowerClass, Calibration.PowerClasses, AmpProtocol.SupplyPresets.Select(p => p.Volts).ToArray()),
+                _settings.PowerClass, Calibration.PowerClasses, AmpProtocol.SupplyPresets.Select(p => p.Volts).ToArray(),
+                _settings.StartupAntenna, _settings.StartupVoltage, Startup.State),
             follow,
             Limits(_settings.PowerClass),
+            new ApiAbout(_about.Name, _about.Version, _about.Author, _about.License, _about.Homepage),
             s.SampledUtc?.ToString("O", System.Globalization.CultureInfo.InvariantCulture));
     }
 
@@ -161,9 +184,10 @@ internal sealed class HfAmpService : IAsyncDisposable
     public async ValueTask DisposeAsync()
     {
         _cts.Cancel();
-        if (_followTask is not null)
+        foreach (var task in new[] { _followTask, _startupTask })
         {
-            try { await _followTask.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
+            if (task is null) continue;
+            try { await task.WaitAsync(TimeSpan.FromSeconds(2)).ConfigureAwait(false); }
             catch (Exception ex) when (ex is TimeoutException or OperationCanceledException) { }
         }
         await Amp.DisposeAsync().ConfigureAwait(false);   // sends 99 so the front panel regains control

@@ -10,7 +10,7 @@ namespace Zeus.Community.HfAmp;
 
 internal sealed record CommandRequest(string? Action, int? Band, int? Antenna, string? Mode, double? Volts);
 
-internal sealed record SettingsRequest(string? Host, bool? FollowBand, int? PowerClass);
+internal sealed record SettingsRequest(string? Host, bool? FollowBand, int? PowerClass, int? StartupAntenna, double? StartupVoltage);
 
 /// <summary>
 /// HTTP surface, mounted by Zeus under /api/plugins/&lt;id&gt;/. It can switch relays
@@ -31,7 +31,11 @@ internal static class HfAmpEndpoints
             With(ctx, service, s =>
             {
                 var c = s.GetSettings();
-                return Results.Json(new { host = c.Host, followBand = c.FollowBand, powerClass = c.PowerClass });
+                return Results.Json(new
+                {
+                    host = c.Host, followBand = c.FollowBand, powerClass = c.PowerClass,
+                    startupAntenna = c.StartupAntenna, startupVoltage = c.StartupVoltage,
+                });
             }));
 
         endpoints.MapGet("prefs", (HttpContext ctx) =>
@@ -65,6 +69,8 @@ internal static class HfAmpEndpoints
                     Host = body!.Host ?? current.Host,
                     FollowBand = body.FollowBand ?? current.FollowBand,
                     PowerClass = body.PowerClass ?? current.PowerClass,
+                    StartupAntenna = body.StartupAntenna ?? current.StartupAntenna,
+                    StartupVoltage = body.StartupVoltage ?? current.StartupVoltage,
                 },
                 ctx.RequestAborted);
             return Reply(ctx, result);

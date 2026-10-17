@@ -10,6 +10,9 @@ Control and metering for a network-connected HF LDMOS amplifier with a RZ1ZR con
   (all locked while transmitting)
 * Settings for the controller power class (600 / 1200 / 2400 / 4800 W, scales the power and current readings)
   and °C or °F
+* **Start-up defaults**: choose an antenna and supply voltage to apply once, shortly after Zeus connects
+  (only when the amp is idle and not faulted; your later choices are never overridden)
+* An About page (version, author, licence, source) from the Settings view
 * Hands the amp back to its front panel (command `99`) when Zeus shuts down
 
 The plugin only *reads* the radio (`ReadRadioState`); it never retunes or keys it.
@@ -58,7 +61,7 @@ A fault that is already present when Zeus connects is shown but not announced. R
 
     cd web && npm run build && cd ..
     dotnet build src/Zeus.Community.HfAmp/Zeus.Community.HfAmp.csproj -c Release
-    dotnet run tests/HfAmp.Tests.cs          # 30 tests against a mock amplifier
+    dotnet run tests/HfAmp.Tests.cs          # 41 tests against a mock amplifier
     cd src/Zeus.Community.HfAmp && pwsh ./build-package.ps1   # script lives beside the .csproj, as in the template
 
 License: GPL-2.0-or-later.
@@ -67,6 +70,6 @@ License: GPL-2.0-or-later.
 
 Rendered from the panel's real code in a test page with stand-in theme colours (Zeus supplies its own).
 
-| Transmitting | Fault | Settings |
-| --- | --- | --- |
-| <img src="docs/transmitting.png" width="260" alt="Panel while transmitting, meters coloured by zone"> | <img src="docs/fault.png" width="260" alt="Fault banner for a high-SWR fault with a Reset button"> | <img src="docs/settings.png" width="260" alt="Settings with chime options and adjustable meter ranges"> |
+| Transmitting | Fault | Settings | About |
+| --- | --- | --- | --- |
+| <img src="docs/transmitting.png" width="260" alt="Panel while transmitting, meters coloured by zone"> | <img src="docs/fault.png" width="260" alt="Fault banner for a high-SWR fault with a Reset button"> | <img src="docs/settings.png" width="260" alt="Settings with start-up defaults, chime options and adjustable meter ranges"> | <img src="docs/about.png" width="260" alt="About page"> |

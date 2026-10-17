@@ -329,7 +329,7 @@ function Panel({ api }) {
   const prefs = usePrefs();
   const [draft, setDraft] = React.useState(null);              // unsaved range edits, keyed by meter
   const [rangeMsg, setRangeMsg] = React.useState({ text: '', err: false });
-  const [view, setView] = React.useState('main');            // 'main' | 'settings'
+  const [view, setView] = React.useState('main');            // 'main' | 'settings' | 'about'
   const peakHold = prefs.peakHold;
   const peakHoldRef = React.useRef(peakHold);
   const peaks = React.useRef({});
@@ -413,7 +413,7 @@ function Panel({ api }) {
           loadError ? `Unavailable: ${loadError}` : 'Loading…')));
   }
 
-  const { connection: c, amp, meters, controls, follow } = status;
+  const { connection: c, amp, meters, controls, follow, about } = status;
   const connected = c.state === 'connected';
   const tx = !!amp?.tx;
   const lockTx = tx; // every control is refused by the backend while transmitting, as in Helios DX
@@ -429,6 +429,28 @@ function Panel({ api }) {
   const pill = unconfigured ? ['Not configured', '']
     : connected ? (fault ? ['Fault', 'tx'] : tx ? ['Transmitting', 'tx'] : ['Connected', 'ok'])
     : [c.state === 'connecting' ? 'Connecting…' : 'Disconnected', 'warn'];
+
+  // ------------------------------------------------------------------ about view
+  if (view === 'about') {
+    const rows = [['Version', about?.version], ['Author', about?.author], ['Licence', about?.license]];
+    return h('div', { className: ROOT },
+      h('section', { className: 'hfa-card', 'aria-label': 'About this feature' },
+        h('div', { className: 'hfa-head' },
+          h('h2', { className: 'hfa-title' }, 'About'),
+          h('button', { type: 'button', onClick: () => setView('settings') }, 'Back')),
+        h('div', { className: 'hfa-group' },
+          h('p', { className: 'hfa-about-name' }, about?.name || 'RZ1ZR LDMOS Amplifier'),
+          h('p', { className: 'hfa-note' }, 'A community feature for Zeus that monitors and controls an HF LDMOS amplifier fitted with an RZ1ZR C5MAX controller: meters, band following, antenna and supply selection, and fault alerts.'),
+          h('dl', { className: 'hfa-about' }, rows.filter(([, v]) => v).map(([k, v]) =>
+            h(React.Fragment, { key: k }, h('dt', null, k), h('dd', null, v)))),
+          about?.homepage
+            ? h('p', { className: 'hfa-note' }, 'Source and issues: ',
+                h('a', { href: about.homepage, target: '_blank', rel: 'noopener noreferrer' }, about.homepage))
+            : null),
+        h('div', { className: 'hfa-group' },
+          h('p', { className: 'hfa-note' }, 'Not affiliated with RZ1ZR. The C5MAX controller and its own application are made by RZ1ZR (see the controller maker’s website for the hardware). This feature talks to the controller over the same network protocol as the vendor application and hands the amplifier back to its front panel when Zeus closes.'),
+          h('p', { className: 'hfa-note' }, 'Free software under the licence above. It comes with no warranty; you are responsible for operating your amplifier safely.'))));
+  }
 
   // ------------------------------------------------------------------ settings view
   if (view === 'settings') {
@@ -485,6 +507,27 @@ function Panel({ api }) {
           }, controls.powerClasses.map((w) => h('option', { key: w, value: w }, `${w} W`))),
           h('p', { className: 'hfa-note' }, 'The controller version. It scales the output, reflected and current readings (input is not affected). Meter ranges below are separate; adjust them to suit.')),
         h('div', { className: 'hfa-group' },
+          h('h2', { className: 'hfa-label' }, 'On start-up'),
+          h('div', { className: 'hfa-row' },
+            h('label', { className: 'hfa-num hfa-grow' },
+              h('span', { className: 'hfa-label' }, 'Antenna'),
+              h('select', {
+                value: controls.startupAntenna, 'aria-label': 'Start-up antenna',
+                onChange: (e) => post('/settings', { startupAntenna: Number(e.target.value) }),
+              }, h('option', { value: 0 }, 'Leave as is'),
+                Array.from({ length: controls.antennas }, (_, i) => h('option', { key: i + 1, value: i + 1 }, `Antenna ${i + 1}`)))),
+            h('label', { className: 'hfa-num hfa-grow' },
+              h('span', { className: 'hfa-label' }, 'Supply voltage'),
+              h('select', {
+                value: controls.startupVoltage, 'aria-label': 'Start-up supply voltage',
+                onChange: (e) => post('/settings', { startupVoltage: Number(e.target.value) }),
+              }, h('option', { value: 0 }, 'Leave as is'),
+                controls.supplyPresets.map((v) => h('option', { key: v, value: v }, `${v} V`))))),
+          h('p', { className: 'hfa-note' }, [
+            'Set once, shortly after Zeus connects to the amplifier, when it is idle and not faulted. Your later choices are not overridden. The supply voltage is stored in the controller.',
+            controls.startupState && controls.startupState !== 'off' ? `Now: ${controls.startupState}.` : '',
+          ].filter(Boolean).join(' '))),
+        h('div', { className: 'hfa-group' },
           h('label', { className: 'hfa-check' },
             h('input', { type: 'checkbox', checked: prefs.tempF, onChange: (e) => updatePrefs({ tempF: e.target.checked }) }),
             'Show temperature in °F'),
@@ -528,6 +571,7 @@ function Panel({ api }) {
             h('button', { type: 'button', onClick: () => { setDraft(toDraft(DEFAULT_PREFS.meters)); setRangeMsg({ text: 'Defaults loaded. Press Save ranges to keep them.', err: false }); } }, 'Reset to defaults'),
             draft ? h('button', { type: 'button', onClick: () => { setDraft(null); setRangeMsg({ text: '', err: false }); } }, 'Discard') : null),
           h('div', { className: 'hfa-msg' + (rangeMsg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' }, rangeMsg.text)),
+        h('div', { className: 'hfa-row' }, h('button', { type: 'button', onClick: () => setView('about') }, 'About')),
         h('div', { className: 'hfa-msg' + (msg.err ? ' err' : ''), role: 'status', 'aria-live': 'polite' }, msg.text)));
   }
 
